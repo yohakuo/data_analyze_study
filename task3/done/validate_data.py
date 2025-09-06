@@ -3,11 +3,12 @@ from influxdb_client import InfluxDBClient
 import clickhouse_connect
 import datetime
 import csv
-from zoneinfo import ZoneInfo #
+from zoneinfo import ZoneInfo 
+import random
 
 pd.set_option('display.max_rows', None)
 
-# --- 1. 数据库连接配置 ---
+# --- 数据库连接配置 ---
 INFLUXDB_URL = "http://localhost:8086"
 INFLUXDB_TOKEN = "study2025"
 INFLUXDB_ORG = "task3"
@@ -20,8 +21,38 @@ CLICKHOUSE_PASSWORD = 'study2025'
 DATABASE_NAME = 'feature_db'
 TABLE_NAME = 'humidity_hourly_features'
 
-# --- 2. 核心功能函数保持不变 ---
-def get_random_feature_from_clickhouse():
+
+def get_adjacent_feature_rows_from_clickhouse():
+    """从ClickHouse随机获取【相邻的两行】特征数据。"""
+    print("--- 步骤 1: 正在从 ClickHouse 随机抽取相邻的两条特征数据... ---")
+    try:
+        client = clickhouse_connect.get_client(
+            host=CLICKHOUSE_HOST, port=CLICKHOUSE_PORT, 
+            username=CLICKHOUSE_USER, password=CLICKHOUSE_PASSWORD
+        )
+        
+        # a. 先获取总行数，以确定随机抽样的范围
+        count_query = f"SELECT count() FROM {DATABASE_NAME}.{TABLE_NAME}"
+        total_rows = client.query(count_query).first_row[0]
+        
+        if total_rows < 2:
+            print("错误：表中的数据不足两行，无法抽取相邻数据。")
+            return None
+            
+        # b. 生成一个安全的随机“起点”(offset)
+        # 范围是 0 到 (总行数 - 2)，确保我们总能抽到两行
+        random_offset = random.randint(0, total_rows - 2)
+        
+        # c. 使用 LIMIT 2 OFFSET ... 语法来抽取相邻的两行
+        query = f"SELECT * FROM {DATABASE_NAME}.{TABLE_NAME} ORDER BY `时间段` ASC LIMIT 2 OFFSET {random_offset}"
+        
+        adjacent_rows_df = client.query_df(query)
+            
+        return adjacent_rows_df
+    except Exception as e:
+        print(f"连接或查询 ClickHouse 时出错: {e}")
+        return None
+
     print("--- 正在从 ClickHouse 随机抽取一条特征数据... ---")
     try:
         client = clickhouse_connect.get_client(
@@ -62,34 +93,32 @@ def get_raw_data_for_hour(start_time_utc):
         return raw_data_list
 
 
-# --- 3. 主执行逻辑 (全新升级版，专注时区转换和显示) ---
 if __name__ == "__main__":
-    # 定义我们关心的本地时区
+    pd.set_option('display.max_rows', None) # 确保打印所有特征
     LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
-    standard_answer = get_random_feature_from_clickhouse()
+    # 模块一：获取标准答案 (现在是两行)
+    standard_answers = get_adjacent_feature_rows_from_clickhouse()
     
-    if standard_answer is not None:
-        # 1. 从 ClickHouse 获取的时间戳，强制其为 UTC 时间
-        timestamp_utc = pd.to_datetime(standard_answer['时间段']).tz_localize('UTC')
-        # 2. 创建一个转换后的“本地时间”版本，专门用于显示
-        timestamp_local = timestamp_utc.tz_convert(LOCAL_TIMEZONE)
-
-        print("✅ 成功获取程序计算的特征")
-
-        # 3. 打印标准答案时，也显示转换后的本地时间
-        display_answer = standard_answer.copy()
-        display_answer['时间段'] = timestamp_local.strftime('%Y-%m-%d %H:%M:%S') # 格式化成易读的字符串
-        print(display_answer)
+    if standard_answers is not None and len(standard_answers) == 2:
         
-        # 获取原始数据
-        # **重要**：传递给后台函数的，依然是精确的、用于机器间对话的 UTC 时间
+        previous_hour = standard_answers.iloc[0]
+        current_hour = standard_answers.iloc[1]
+
+        # 为了显示，我们转换时间
+        prev_time_local = pd.to_datetime(previous_hour['时间段']).tz_localize('UTC').tz_convert(LOCAL_TIMEZONE)
+        curr_time_local = pd.to_datetime(current_hour['时间段']).tz_localize('UTC').tz_convert(LOCAL_TIMEZONE)
+        
+        print("✅ 成功获取！将对下面“当前小时”的数据进行验证：")
+        print("\n--- 当前小时特征(程序计算) ---")
+        print(current_hour)
+        
+        # 模块二：获取“当前小时”的原始数据用于验证
+        timestamp_utc = pd.to_datetime(current_hour['时间段']).tz_localize('UTC')
         raw_data = get_raw_data_for_hour(timestamp_utc)
         
         if raw_data:
-            # 4. 创建 CSV 文件名时，使用我们熟悉的本地时间
-            filename = f"{timestamp_local.strftime('%Y-%m-%d_%H%M')}_validation_data.csv"
-            print(f"--- 正在将原始数据导出到 CSV 文件... ---")
+            filename = f"validation_data_{curr_time_local.strftime('%Y-%m-%d_%H%M')}.csv"
             
             with open(filename, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
@@ -97,6 +126,25 @@ if __name__ == "__main__":
                 for value in raw_data:
                     writer.writerow([value])
             
-            print(f"成功！原始数据已保存到文件: {filename}")
+            
+            print("\n" + "="*50)
+            print("      *** 高级特征手动验证 ***")
+            print("="*50)
+            
+            # 从抽取的两行数据中获取极差
+            prev_range = previous_hour['极差']
+            curr_range = current_hour['极差']
+            
+            print(f"前一小时的极差: {prev_range}")
+            print(f"当前小时的极差: {curr_range}")
+            
+            # 手动计算变化率
+            manual_rate_of_change = 0.0
+            if prev_range != 0: # 避免除以零的错误
+                manual_rate_of_change = (curr_range - prev_range) / prev_range
+            
+            print(f"手动计算的变化率: ({curr_range} - {prev_range}) / {prev_range} = {manual_rate_of_change:.4f}")
+            script_rate_of_change = current_hour['极差的时间变化率']
+            print(f"脚本计算的变化率: {script_rate_of_change:.4f}")
         else:
             print("未能从 InfluxDB 获取到这个小时的原始数据。")

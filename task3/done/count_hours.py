@@ -1,8 +1,7 @@
 import pandas as pd
 
-# 使用我们从日志里读到的开始和结束时间
 start_time = pd.Timestamp("2021-01-01 00:00:00+00:00")
-end_time = pd.Timestamp("2021-11-02 07:53:00+00:00") # 请根据你的实际日志修改结束时间
+end_time = pd.Timestamp("2025-7-10 15:17:00+00:00") # 请根据你的实际日志修改结束时间
 
 # 计算两个时间点之间的总秒数
 total_seconds = (end_time - start_time).total_seconds()

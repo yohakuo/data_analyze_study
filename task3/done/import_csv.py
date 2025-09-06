@@ -9,7 +9,7 @@ INFLUXDB_TOKEN = "study2025"
 INFLUXDB_ORG = "task3"
 INFLUXDB_BUCKET = "cave45"
 
-CSV_FILE_PATH = 'real_data.CSV'   
+CSV_FILE_PATH = 'data_23.CSV'   
 MEASUREMENT_NAME = 'adata'    
 LOCAL_TIMEZONE = "Asia/Shanghai"
 
