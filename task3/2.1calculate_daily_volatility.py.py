@@ -110,7 +110,7 @@ if __name__ == "__main__":
         plt.plot(daily_volatility_df.index, daily_volatility_df['每日标准差'], marker='.', linestyle='-', label='每日标准差 (绝对波动)')
         plt.axhline(y=stable_threshold, color='g', linestyle='--', label=f'平稳阈值 (25%分位数) = {stable_threshold:.2f}')
         
-        plt.title('每日湿度波动性地图', fontproperties="SimHei", fontsize=18)
+        plt.title('每日相对湿度波动性地图', fontproperties="SimHei", fontsize=18)
         plt.xlabel('日期', fontproperties="SimHei", fontsize=12)
         plt.ylabel('每日标准差', fontproperties="SimHei", fontsize=12)
         plt.legend(prop={"family":"SimHei"})

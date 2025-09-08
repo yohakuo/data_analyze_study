@@ -1,4 +1,26 @@
-﻿.venv/
+# 虚拟环境
+venv/
+.venv/
+env/
+.env
+
+# Python 缓存
 __pycache__/
+*.pyc
+.idea/
+
+# IDE 和编辑器配置
+.vscode/
+.idea/
+*.swp
+
+# Jupyter Notebook 缓存
+.ipynb_checkpoints
 note/
 etc/
+
+.pytest_cache/
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
