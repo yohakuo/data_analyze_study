@@ -1,5 +1,5 @@
 import src.config as config
-from src.dataset import get_humidity_data, store_features_to_clickhouse
+from src.dataset import get_all_data, store_features_to_clickhouse
 from src.features import calculate_hourly_features
 
 
@@ -9,7 +9,7 @@ def main():
     """
     # 1. 提取数据
     print("--- 正在从 InfluxDB 提取数据 ---")
-    raw_df = get_humidity_data()
+    raw_df = get_all_data()
 
     if raw_df.empty:
         print("没有提取到数据，流程结束。")

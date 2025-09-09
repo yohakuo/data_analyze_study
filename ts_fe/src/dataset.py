@@ -1,5 +1,7 @@
 # 与数据读取和写入相关的操作,包括从influxdb读取数据,以及将计算好的特征存入clickhouse
 
+import datetime
+
 import clickhouse_connect
 import pandas as pd
 from influxdb_client import InfluxDBClient
@@ -7,7 +9,8 @@ from influxdb_client import InfluxDBClient
 from src import config
 
 
-def get_humidity_data() -> pd.DataFrame:
+# 从 InfluxDB 获取湿度数据
+def get_all_data() -> pd.DataFrame:
     with InfluxDBClient(
         url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
     ) as client:
@@ -40,6 +43,75 @@ def get_humidity_data() -> pd.DataFrame:
             return df_cleaned
         else:
             print("错误：返回的数据中缺少 '_time' 或 '空气湿度' 列。")
+
+
+##可指定表，字段和时间
+def get_timeseries_data(
+    measurement_name: str,
+    field_name: str,
+    start_time: datetime.datetime = None,
+    stop_time: datetime.datetime = None,
+) -> pd.DataFrame:
+    """
+    从 InfluxDB 查询指定表、指定字段、指定时间范围的数据。
+
+    Args:
+        measurement_name (str): 要查询的 InfluxDB Measurement (表名)。
+        field_name (str): 要查询的字段名。
+        start_time (datetime, optional): 查询的开始时间 (带时区)。默认为 None (从头开始)。
+        stop_time (datetime, optional): 查询的结束时间 (带时区)。默认为 None (直到现在)。
+
+    Returns:
+        pd.DataFrame: 清理好的时间序列数据。
+    """
+
+    if start_time is None:
+        range_clause = "start: 0"  # 如果没有指定开始时间，则查询所有历史数据
+    else:
+        # 将 Python 的 datetime 对象转换为 InfluxDB 查询所需的 RFC3339 UTC 字符串
+        start_utc_str = start_time.astimezone(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ"
+        )
+        if stop_time is None:
+            range_clause = f"start: {start_utc_str}"
+        else:
+            stop_utc_str = stop_time.astimezone(datetime.timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"
+            )
+            range_clause = f"start: {start_utc_str}, stop: {stop_utc_str}"
+
+    with InfluxDBClient(
+        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
+    ) as client:
+        query = f'''
+        from(bucket: "{config.INFLUXDB_BUCKET}")
+          |> range({range_clause})
+          |> filter(fn: (r) => r["_measurement"] == "{measurement_name}")
+          |> filter(fn: (r) => r["_field"] == "{field_name}")
+          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+        '''
+
+        print(f"正在从 InfluxDB 的表 '{measurement_name}' 中查询数据...")
+        df = client.query_api().query_data_frame(query=query, org=config.INFLUXDB_ORG)
+
+        if df.empty:
+            print("警告：在指定的时间范围内，查询结果为空。")
+            return df
+
+        print("数据查询成功，正在进行预处理...")
+
+        if field_name in df.columns and "_time" in df.columns:
+            df_cleaned = df[["_time", field_name]]
+            df_cleaned = df_cleaned.set_index("_time")
+            df_cleaned.index = pd.to_datetime(df_cleaned.index)
+            df_cleaned[field_name] = pd.to_numeric(
+                df_cleaned[field_name], errors="coerce"
+            )
+            df_cleaned = df_cleaned.dropna()
+            return df_cleaned
+        else:
+            print(f"错误：返回的数据中缺少 '_time' 或 '{field_name}' 列。")
+            return pd.DataFrame()
 
 
 def store_features_to_clickhouse(df: pd.DataFrame, table_name: str):

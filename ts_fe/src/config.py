@@ -1,9 +1,5 @@
 # 存放所有可能会变化的配置信息，比如数据库地址、文件名、密码等
 
-import clickhouse_connect
-import pandas as pd
-from influxdb_client import InfluxDBClient
-
 # ---  InfluxDB 连接配置 ---
 INFLUXDB_URL = "http://localhost:8086"
 INFLUXDB_TOKEN = "study2025"
@@ -13,6 +9,7 @@ INFLUXDB_BUCKET = "cave45"
 # 查询设置
 MEASUREMENT_NAME = "DongNan"  # XiBei、DongNan
 FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃）
+
 
 # --- 导入CSV文件配置 ---
 INFLUX_MEASUREMENT_NAME = "XiBei"
@@ -25,6 +22,10 @@ TIMESTAMP_COLUMN = "采集时间"
 TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M:%S"
 FIELD_COLUMNS = ["空气温度（℃）", "空气湿度（%）"]
 TAG_COLUMNS = []
+
+# 输出相关设置
+PROCESSED_DATA_PATH = "data/processed/"
+FIGURES_PATH = "figures/"
 
 # --- ClickHouse 连接配置 ---
 CLICKHOUSE_HOST = "localhost"
