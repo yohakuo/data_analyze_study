@@ -3,13 +3,12 @@
 import datetime
 
 import clickhouse_connect
-import pandas as pd
 from influxdb_client import InfluxDBClient
+import pandas as pd
 
 from src import config
 
 
-# 从 InfluxDB 获取湿度数据
 def get_all_data() -> pd.DataFrame:
     with InfluxDBClient(
         url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
@@ -104,9 +103,7 @@ def get_timeseries_data(
             df_cleaned = df[["_time", field_name]]
             df_cleaned = df_cleaned.set_index("_time")
             df_cleaned.index = pd.to_datetime(df_cleaned.index)
-            df_cleaned[field_name] = pd.to_numeric(
-                df_cleaned[field_name], errors="coerce"
-            )
+            df_cleaned[field_name] = pd.to_numeric(df_cleaned[field_name], errors="coerce")
             df_cleaned = df_cleaned.dropna()
             return df_cleaned
         else:

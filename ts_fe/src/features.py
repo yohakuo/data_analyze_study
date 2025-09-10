@@ -1,5 +1,8 @@
 # 所有核心的数据计算和转换逻辑,位于dataset之上
+import numpy as np
 import pandas as pd
+from scipy.fft import fft, fftfreq
+from scipy.signal import detrend
 
 from src import dataset
 
@@ -47,9 +50,7 @@ def calculate_hourly_features(df: pd.DataFrame, field_name: str) -> pd.DataFrame
     hourly_stats["极差的时间变化率"] = hourly_stats["极差"].pct_change().fillna(0)
 
     # 4. 最后整理一下列名
-    hourly_stats.rename(
-        columns={"中位数": "中位数 (Q2)", "P10": "10th百分位数"}, inplace=True
-    )
+    hourly_stats.rename(columns={"中位数": "中位数 (Q2)", "P10": "10th百分位数"}, inplace=True)
 
     print(f"字段 '{field_name}' 的小时级特征计算完成！")
     return hourly_stats
@@ -110,9 +111,7 @@ def find_longest_stable_period(df: pd.DataFrame, threshold: float):
 
     # 使用 groupby 和 shift() 的技巧来找出所有连续的平稳期
     streaks = (
-        df[df["is_stable"]]
-        .groupby((df["is_stable"] != df["is_stable"].shift()).cumsum())
-        .size()
+        df[df["is_stable"]].groupby((df["is_stable"] != df["is_stable"].shift()).cumsum()).size()
     )
 
     if streaks.empty:
@@ -132,3 +131,34 @@ def find_longest_stable_period(df: pd.DataFrame, threshold: float):
     end_date = streak_df.index.max().date()
 
     return start_date, end_date, longest_streak_len
+
+
+# FFT分析
+def analyze_with_fft(df: pd.DataFrame, field_name: str):
+    """
+    对 DataFrame 中的指定字段进行FFT分析，并找出最主要的周期
+    """
+    if df.empty:
+        return None
+
+    print(f"\n正在对字段 '{field_name}' 进行频谱分析 (FFT)...")
+
+    # 1. 去除趋势
+    print("正在去除数据的长期趋势...")
+    detrended_values = detrend(df[field_name].values)
+
+    # 2. FFT 计算
+    N = len(detrended_values)
+    T = (df.index[1] - df.index[0]).total_seconds()  # 自动计算采样间隔
+    yf = fft(detrended_values)
+    xf = fftfreq(N, T)[: N // 2]
+    amplitude = 2.0 / N * np.abs(yf[0 : N // 2])
+
+    # 3. 将频率转换为小时为单位的周期
+    periods_in_hours = np.full_like(xf, np.inf)
+    non_zero_indices = xf > 0
+    periods_in_hours[non_zero_indices] = 1 / xf[non_zero_indices] / 3600
+
+    # 4. 组合成 DataFrame 并返回
+    spectrum_df = pd.DataFrame({"周期(小时)": periods_in_hours, "强度(幅度)": amplitude})
+    return spectrum_df

@@ -6,9 +6,14 @@ INFLUXDB_TOKEN = "study2025"
 INFLUXDB_ORG = "task3"
 INFLUXDB_BUCKET = "cave45"
 
-# 查询设置
-MEASUREMENT_NAME = "DongNan"  # XiBei、DongNan
-FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃）
+# --- ClickHouse 连接配置 ---
+CLICKHOUSE_HOST = "localhost"
+CLICKHOUSE_PORT = 8123
+CLICKHOUSE_USER = "default"
+CLICKHOUSE_PASSWORD = "study2025"
+DATABASE_NAME = "feature_db"
+HOURLY_FEATURES_TABLE_A = "humidity_hourly_features_DongNan"
+HOURLY_FEATURES_TABLE_B = "humidity_hourly_features_XiBei"
 
 
 # --- 导入CSV文件配置 ---
@@ -27,11 +32,6 @@ TAG_COLUMNS = []
 PROCESSED_DATA_PATH = "data/processed/"
 FIGURES_PATH = "figures/"
 
-# --- ClickHouse 连接配置 ---
-CLICKHOUSE_HOST = "localhost"
-CLICKHOUSE_PORT = 8123
-CLICKHOUSE_USER = "default"
-CLICKHOUSE_PASSWORD = "study2025"
-DATABASE_NAME = "feature_db"
-HOURLY_FEATURES_TABLE_A = "humidity_hourly_features_DongNan"
-HOURLY_FEATURES_TABLE_B = "humidity_hourly_features_XiBei"
+# 查询设置
+MEASUREMENT_NAME = "DongNan"  # XiBei、DongNan
+FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃）
