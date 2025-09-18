@@ -12,9 +12,7 @@ CLICKHOUSE_PORT = 8123
 CLICKHOUSE_USER = "default"
 CLICKHOUSE_PASSWORD = "study2025"
 DATABASE_NAME = "feature_db"
-HOURLY_FEATURES_TABLE_A = "humidity_hourly_features_DongNan"
-HOURLY_FEATURES_TABLE_B = "humidity_hourly_features_XiBei"
-
+HOURLY_FEATURES_TABLE = "humidity_hourly_features_DongNan"  # "humidity_hourly_features_XiBei"
 
 # --- 导入CSV文件配置 ---
 INFLUX_MEASUREMENT_NAME = "XiBei"

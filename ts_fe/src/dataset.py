@@ -9,41 +9,6 @@ import pandas as pd
 from src import config
 
 
-def get_all_data() -> pd.DataFrame:
-    with InfluxDBClient(
-        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
-    ) as client:
-        # 使用 range(start: 0) 获取所有数据
-        query = f'''
-        from(bucket: "{config.INFLUXDB_BUCKET}")
-          |> range(start: 0)
-          |> filter(fn: (r) => r["_measurement"] == "{config.MEASUREMENT_NAME}")
-          |> filter(fn: (r) => r["_field"] == "{config.FIELD_NAME}")
-          |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
-        '''
-
-        print("正在从 InfluxDB 查询【所有】数据，请稍候...")
-        df = client.query_api().query_data_frame(query=query, org=config.INFLUXDB_ORG)
-
-        if df.empty:
-            print("警告：查询结果为空，请检查 InfluxDB 中是否有数据。")
-            return df
-
-        print("数据查询成功，正在进行预处理...")
-
-        if config.FIELD_NAME in df.columns and "_time" in df.columns:
-            df_cleaned = df[["_time", config.FIELD_NAME]]
-            df_cleaned = df_cleaned.set_index("_time")
-            df_cleaned.index = pd.to_datetime(df_cleaned.index)
-            df_cleaned[config.FIELD_NAME] = pd.to_numeric(
-                df_cleaned[config.FIELD_NAME], errors="coerce"
-            )
-            df_cleaned = df_cleaned.dropna()
-            return df_cleaned
-        else:
-            print("错误：返回的数据中缺少 '_time' 或 '空气湿度' 列。")
-
-
 ##可指定表，字段和时间
 def get_timeseries_data(
     measurement_name: str,
@@ -111,83 +76,82 @@ def get_timeseries_data(
             return pd.DataFrame()
 
 
-def store_features_to_clickhouse(df: pd.DataFrame, table_name: str):
+def store_features_to_clickhouse(
+    df: pd.DataFrame,
+    table_name: str,
+    field_name: str,
+    device_id: str,
+    temple_id: str,
+    stats_cycle: str,
+):
+    """
+    接收【宽格式】的特征 DataFrame，将其转换为【长格式】，并存入 ClickHouse。
+    """
     if df.empty:
         print("\n特征数据为空，跳过存储。")
         return
 
-    print(f"\n开始将特征数据存入 ClickHouse 的表: '{table_name}'...")
+    print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
 
     try:
+        # (前面的“宽”转“长”、添加元数据、重命名列等代码都保持不变)
+        df_long = df.reset_index()
+        feature_columns = [col for col in df.columns if col not in ["分析周期"]]
+        df_long = pd.melt(
+            df_long,
+            id_vars=["_time"],
+            value_vars=feature_columns,
+            var_name="feature_key",
+            value_name="feature_value",
+        )
+        df_long["temple_id"] = temple_id
+        df_long["device_id"] = device_id
+        df_long["monitored_variable"] = field_name
+        df_long["stats_cycle"] = stats_cycle
+        df_long["created_at"] = datetime.datetime.now()
+        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
+        final_columns = [
+            "temple_id",
+            "device_id",
+            "stats_start_time",
+            "monitored_variable",
+            "stats_cycle",
+            "feature_key",
+            "feature_value",
+            "created_at",
+        ]
+        df_to_insert = df_long[final_columns]
+
+        # (连接 ClickHouse 和建表的代码保持不变)
         client = clickhouse_connect.get_client(
             host=config.CLICKHOUSE_HOST,
             port=config.CLICKHOUSE_PORT,
-            username="default",
-            password="study2025",
+            username=config.CLICKHOUSE_USER,
+            password=config.CLICKHOUSE_PASSWORD,
         )
         client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
-
-        # 使用传入的 table_name 参数来构建建表语句
         create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}` 
+        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
         (
-            `时间段` DateTime,
-            `分析周期` String,
-            `均值` Float64,
-            `中位数_Q2` Float64,
-            `最大值` Float64,
-            `最小值` Float64,
-            `Q1` Float64,
-            `Q3` Float64,
-            `P10` Float64,
-            `极差` Float64,
-            `超过Q3占时比` Float64,
-            `极差的时间变化率` Float64
-        )
-        ENGINE = MergeTree()
-        ORDER BY `时间段`
+            `stat_id` BIGINT, `temple_id` CHAR(20), `device_id` CHAR(30),
+            `stats_start_time` DATETIME, `monitored_variable` CHAR(20),
+            `stats_cycle` CHAR(10), `feature_key` CHAR(30),
+            `feature_value` VARCHAR(30), `standby_field01` CHAR(30), `created_at` TIMESTAMP
+        ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
         """
         client.command(create_table_query)
-        print(f"数据库 '{config.DATABASE_NAME}' 和表 '{table_name}' 已准备就绪。")
 
-        # 准备数据用于插入
-        # 复制一份数据，避免修改原始的 DataFrame
-        df_to_insert = df.copy()
-        df_to_insert["分析周期"] = "hourly"
-        # 把索引（时间）变回普通列，并重命名以匹配表结构
-        df_to_insert = df_to_insert.reset_index()
-        df_to_insert.rename(
-            columns={
-                "_time": "时间段",
-                "中位数 (Q2)": "中位数_Q2",
-                "10th百分位数": "P10",
-            },
-            inplace=True,
-        )
-        # d. 确保列的顺序和类型与表定义一致
-        final_columns = [
-            "时间段",
-            "分析周期",
-            "均值",
-            "中位数_Q2",
-            "最大值",
-            "最小值",
-            "Q1",
-            "Q3",
-            "P10",
-            "极差",
-            "超过Q3占时比",
-            "极差的时间变化率",
-        ]
-        df_to_insert = df_to_insert[final_columns]
+        # 在插入数据之前，转换数据类型
+        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
 
-        print(f"正在插入 {len(df_to_insert)} 行数据...")
-        client.insert_df(f"{config.DATABASE_NAME}.{table_name}", df_to_insert)
+        # 5. 插入转换后的长格式数据
+        print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
+        client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
 
-        print("数据成功存入 ClickHouse！")
+        print(f"✅ 数据成功存入 ClickHouse 的新表 '{table_name}'！")
 
     except Exception as e:
-        print(f"存入 ClickHouse 时发生错误: {e}")
+        print(f"❌ 存入 ClickHouse 时发生错误: {e}")
 
 
 def get_latest_timestamp_from_clickhouse() -> pd.Timestamp:
