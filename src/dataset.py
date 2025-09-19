@@ -7,8 +7,10 @@ from influxdb_client import InfluxDBClient
 import pandas as pd
 
 from src import config
+from src.utils import timing_decorator
 
 
+@timing_decorator
 ##可指定表，字段和时间
 def get_timeseries_data(
     measurement_name: str,
@@ -76,6 +78,7 @@ def get_timeseries_data(
             return pd.DataFrame()
 
 
+@timing_decorator
 def store_features_to_clickhouse(
     df: pd.DataFrame,
     table_name: str,
@@ -148,7 +151,7 @@ def store_features_to_clickhouse(
         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
 
-        print(f"✅ 数据成功存入 ClickHouse 的新表 '{table_name}'！")
+        print(f"✅ 数据成功存入 ClickHouse 的表 '{table_name}'！")
 
     except Exception as e:
         print(f"❌ 存入 ClickHouse 时发生错误: {e}")

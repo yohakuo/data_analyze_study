@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-from src.validation import get_adjacent_feature_rows, get_raw_data_for_hour
+from ts_fe.src.utils import get_adjacent_feature_rows, get_raw_data_for_hour
 
 # --- 要验证的目标 ---
 TABLE_TO_VALIDATE = "humidity_hourly_features_DongNan"
@@ -23,9 +23,7 @@ def calculate_percent_above_q3(series):
     return percent_above_q3
 
 
-def recalculate_single_hour_features(
-    raw_data_series: pd.Series, field_name: str
-) -> pd.Series:
+def recalculate_single_hour_features(raw_data_series: pd.Series, field_name: str) -> pd.Series:
     """接收一个小时的原始数据序列，重新计算所有特征并返回一个 Series"""
     if raw_data_series.empty:
         return pd.Series(dtype="object")
@@ -71,14 +69,10 @@ def main():
         current_hour = standard_answers.iloc[1]
 
         curr_time_local = (
-            pd.to_datetime(current_hour["时间段"])
-            .tz_localize("UTC")
-            .tz_convert(LOCAL_TIMEZONE)
+            pd.to_datetime(current_hour["时间段"]).tz_localize("UTC").tz_convert(LOCAL_TIMEZONE)
         )
 
-        print(
-            f"\n--- 正在验证时间段为 {curr_time_local.strftime('%Y-%m-%d %H:%M:%S')} 的数据 ---"
-        )
+        print(f"\n--- 正在验证时间段为 {curr_time_local.strftime('%Y-%m-%d %H:%M:%S')} 的数据 ---")
 
         timestamp_utc = pd.to_datetime(current_hour["时间段"]).tz_localize("UTC")
         raw_data_list = get_raw_data_for_hour(

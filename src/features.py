@@ -4,7 +4,7 @@ import pandas as pd
 from scipy.fft import fft, fftfreq
 from scipy.signal import detrend
 
-from src import dataset
+from src.utils import timing_decorator
 
 
 # 统计特征计算
@@ -20,37 +20,61 @@ def calculate_percent_above_q3(series):
     return percent_above_q3
 
 
-def calculate_hourly_features(df: pd.DataFrame, field_name: str) -> pd.DataFrame:
+FEATURE_CALCULATORS = {
+    "均值": "mean",
+    "中位数": "median",
+    "最大值": "max",
+    "最小值": "min",
+    "标准差": "std",
+    "Q1": lambda x: x.quantile(0.25),
+    "Q3": lambda x: x.quantile(0.75),
+    "P10": lambda x: x.quantile(0.10),
+    "超过Q3占时比": calculate_percent_above_q3,
+}
+
+
+@timing_decorator
+def calculate_hourly_features(
+    df: pd.DataFrame, field_name: str, feature_list: list
+) -> pd.DataFrame:
+    """
+    接收原始数据 DataFrame，并根据【指定的特征列表】，计算小时级统计特征。
+    """
     if df.empty or field_name not in df.columns:
         print(f"错误：数据为空或找不到指定的字段 '{field_name}'")
         return pd.DataFrame()
 
-    print(f"\n正在为字段 '{field_name}' 计算小时级特征...")
+    print(f"\n正在为字段 '{field_name}' 计算指定的 {len(feature_list)} 个小时级特征...")
 
-    # 1. 先选择要分析的列，并按小时重采样
-    resampled_data = df[field_name].resample("H")
+    # a. 从我们的“大菜单”中，只挑出这次“点菜单”上有的菜
+    agg_functions = {
+        feature: FEATURE_CALCULATORS[feature]
+        for feature in feature_list
+        if feature in FEATURE_CALCULATORS
+    }
 
-    # 2. 然后使用 new_column_name='function' 的语法进行聚合
-    hourly_stats = resampled_data.agg(
-        均值="mean",
-        中位数="median",
-        最大值="max",
-        最小值="min",
-        Q1=lambda x: x.quantile(0.25),
-        Q3=lambda x: x.quantile(0.75),
-        P10=lambda x: x.quantile(0.10),
-    )
+    if not agg_functions:
+        print("错误：指定的特征都不在可计算的列表中。")
+        return pd.DataFrame()
 
-    hourly_stats["极差"] = hourly_stats["最大值"] - hourly_stats["最小值"]
+    # b. 使用 .agg() 一次性计算所有被选中的特征
+    hourly_stats = df[field_name].resample("h").agg(**agg_functions)
 
-    percent_above_q3 = df[field_name].resample("H").apply(calculate_percent_above_q3)
-    hourly_stats["超过Q3占时比"] = percent_above_q3
+    # c. 计算依赖于其他结果的衍生特征
+    #    只有当“最大值”和“最小值”都被点了，我们才能算“极差”
+    if "最大值" in hourly_stats.columns and "最小值" in hourly_stats.columns:
+        hourly_stats["极差"] = hourly_stats["最大值"] - hourly_stats["最小值"]
 
-    hourly_stats["极差的时间变化率"] = hourly_stats["极差"].pct_change().fillna(0)
+    #    只有当“极差”被计算出来了，我们才能算“极差的时间变化率”
+    if "极差" in hourly_stats.columns:
+        hourly_stats["极差的时间变化率"] = hourly_stats["极差"].pct_change().fillna(0)
 
-    hourly_stats.rename(columns={"中位数": "中位数 (Q2)", "P10": "10th百分位数"}, inplace=True)
+    # d. 重命名，让列名更规范
+    #    只有当“中位数”被点了，我们才需要重命名它
+    if "中位数" in hourly_stats.columns:
+        hourly_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
 
-    print(f"字段 '{field_name}' 的小时级特征计算完成！")
+    print("指定的特征计算完成！")
     return hourly_stats
 
 

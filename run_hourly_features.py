@@ -1,4 +1,5 @@
 import datetime
+import time
 from zoneinfo import ZoneInfo
 
 from src.dataset import get_timeseries_data, store_features_to_clickhouse
@@ -26,18 +27,20 @@ FEATURE_KEY = "mean"
 
 
 def main():
+    start_time = time.perf_counter()
     raw_df = get_timeseries_data(
         measurement_name=MEASUREMENT_NAME,
         field_name=FIELD_NAME,
-        start_time=ANALYSIS_START_TIME_LOCAL,
-        stop_time=ANALYSIS_STOP_TIME_LOCAL,
+        start_time=None,  # ANALYSIS_START_TIME_LOCAL,
+        stop_time=None,  # ANALYSIS_STOP_TIME_LOCAL,
     )
     if raw_df.empty:
         print("没有提取到数据，流程结束。")
         return
 
+    FEATURE_LIST = ["均值"]
     humidity_features_wide = calculate_hourly_features(
-        raw_df, field_name=FIELD_NAME, feature_key=FEATURE_KEY
+        raw_df, field_name=FIELD_NAME, feature_list=FEATURE_LIST
     )
 
     store_features_to_clickhouse(
@@ -48,6 +51,9 @@ def main():
         temple_id=TEMPLE_ID,
         stats_cycle=STATS_CYCLE,
     )
+
+    end_time = time.perf_counter()
+    print(f"\n🎉 ** 总耗时: {end_time - start_time:.2f} 秒 ** 🎉")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import csv
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from src.validation import get_adjacent_feature_rows, get_raw_data_for_hour
+from ts_fe.src.utils import get_adjacent_feature_rows, get_raw_data_for_hour
 
 # --- 要验证的目标 ---
 TABLE_TO_VALIDATE = "humidity_hourly_features_DongNan"
@@ -21,9 +21,7 @@ def main():
         current_hour = standard_answers.iloc[1]
 
         curr_time_local = (
-            pd.to_datetime(current_hour["时间段"])
-            .tz_localize("UTC")
-            .tz_convert(LOCAL_TIMEZONE)
+            pd.to_datetime(current_hour["时间段"]).tz_localize("UTC").tz_convert(LOCAL_TIMEZONE)
         )
 
         print("✅ 成功获取！将对下面“当前小时”的数据进行验证：")
@@ -40,9 +38,7 @@ def main():
 
         if raw_data:
             # 3. 导出原始数据到 CSV
-            filename = (
-                f"validation_data_{curr_time_local.strftime('%Y-%m-%d_%H%M')}.csv"
-            )
+            filename = f"validation_data_{curr_time_local.strftime('%Y-%m-%d_%H%M')}.csv"
             with open(filename, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([FIELD_TO_VALIDATE])
