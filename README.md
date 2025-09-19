@@ -39,9 +39,9 @@ study
 │
 ├── setup.cfg          <- Configuration file for flake8
 │
-└── none   <- Source code for use in this project.
+└── src   <- Source code for use in this project.
     │
-    ├── __init__.py             <- Makes none a Python module
+    ├── __init__.py             <- Makes src a Python module
     │
     ├── config.py               <- Store useful variables and configuration
     │
