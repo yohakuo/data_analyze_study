@@ -3,9 +3,9 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "none"
+name = "src"
 version = "0.0.1"
-description = "study"
+description = "Time Series Feature Engineering Library"
 authors = [
   { name = "600" },
 ]
@@ -20,13 +20,12 @@ requires-python = "~=3.13.0"
 
 [tool.ruff]
 line-length = 99
-src = ["none"]
-include = ["pyproject.toml", "none/**/*.py"]
+src = ["src"]
+include = ["pyproject.toml", "src/**/*.py"]
 
 [tool.ruff.lint]
 extend-select = ["I"]  # Add import sorting
 
 [tool.ruff.lint.isort]
-known-first-party = ["none"]
+known-first-party = ["src"]
 force-sort-within-sections = true
-

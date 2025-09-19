@@ -78,6 +78,32 @@ def calculate_hourly_features(
     return hourly_stats
 
 
+def recalculate_single_hour_features(raw_data_series: pd.Series) -> pd.Series:
+    """
+    接收一个小时的原始数据序列(Series)，重新计算所有（非变化率）特征并返回一个 Series。
+    这个函数是自动化测试的核心。
+    """
+    if raw_data_series.empty:
+        return pd.Series(dtype="object")
+
+    # 我们在这里“手动”地、一步步地重新计算所有特征
+    recalculated_features = pd.Series(
+        {
+            "均值": raw_data_series.mean(),
+            "中位数_Q2": raw_data_series.median(),
+            "最大值": raw_data_series.max(),
+            "最小值": raw_data_series.min(),
+            "Q1": raw_data_series.quantile(0.25),
+            "Q3": raw_data_series.quantile(0.75),
+            "P10": raw_data_series.quantile(0.10),
+            "极差": raw_data_series.max() - raw_data_series.min(),
+            # 这里复用了我们的辅助函数，保证了检验标准和生产标准一致
+            "超过Q3占时比": calculate_percent_above_q3(raw_data_series),
+        }
+    )
+    return recalculated_features
+
+
 # 波动性特征计算
 def mad_from_mean(series):
     """计算对均值的平均绝对偏差"""

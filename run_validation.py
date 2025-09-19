@@ -2,7 +2,8 @@ import csv
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from ts_fe.src.utils import get_adjacent_feature_rows, get_raw_data_for_hour
+
+from src.utils import get_adjacent_feature_rows, get_raw_data_for_hour
 
 # --- 要验证的目标 ---
 TABLE_TO_VALIDATE = "humidity_hourly_features_DongNan"

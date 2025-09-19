@@ -12,7 +12,7 @@ ANALYSIS_START_TIME_LOCAL = datetime.datetime(2022, 1, 4, tzinfo=ZoneInfo("Asia/
 ANALYSIS_STOP_TIME_LOCAL = datetime.datetime(2022, 1, 14, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 # 存储--store_features_to_clickhouse
-HOURLY_FEATURES_TABLE = "features_calulate"
+HOURLY_FEATURES_TABLE = "features_caculate"
 
 ## 元数据字段
 TEMPLE_ID = "045"
