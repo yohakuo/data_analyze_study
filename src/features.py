@@ -34,17 +34,20 @@ FEATURE_CALCULATORS = {
 
 
 @timing_decorator
-def calculate_hourly_features(
-    df: pd.DataFrame, field_name: str, feature_list: list
+def calculate_features(
+    df: pd.DataFrame, field_name: str, feature_list: list, freq: str = "h"
 ) -> pd.DataFrame:
     """
-    接收原始数据 DataFrame，并根据【指定的特征列表】，计算小时级统计特征。
+    接收原始数据 DataFrame，并根据【指定的特征列表】和【时间频率】计算统计特征。
+    freq: 'h'-小时, 'D'-天, 'W'-周, 'M'-月
     """
     if df.empty or field_name not in df.columns:
         print(f"错误：数据为空或找不到指定的字段 '{field_name}'")
         return pd.DataFrame()
 
-    print(f"\n正在为字段 '{field_name}' 计算指定的 {len(feature_list)} 个小时级特征...")
+    print(
+        f"\n正在为字段 '{field_name}' 以 '{freq}' 的频率计算指定的 {len(feature_list)} 个特征..."
+    )
 
     # a. 从我们的“大菜单”中，只挑出这次“点菜单”上有的菜
     agg_functions = {
@@ -58,24 +61,24 @@ def calculate_hourly_features(
         return pd.DataFrame()
 
     # b. 使用 .agg() 一次性计算所有被选中的特征
-    hourly_stats = df[field_name].resample("h").agg(**agg_functions)
+    resampled_stats = df[field_name].resample(freq).agg(**agg_functions)
 
     # c. 计算依赖于其他结果的衍生特征
     #    只有当“最大值”和“最小值”都被点了，我们才能算“极差”
-    if "最大值" in hourly_stats.columns and "最小值" in hourly_stats.columns:
-        hourly_stats["极差"] = hourly_stats["最大值"] - hourly_stats["最小值"]
+    if "最大值" in resampled_stats.columns and "最小值" in resampled_stats.columns:
+        resampled_stats["极差"] = resampled_stats["最大值"] - resampled_stats["最小值"]
 
     #    只有当“极差”被计算出来了，我们才能算“极差的时间变化率”
-    if "极差" in hourly_stats.columns:
-        hourly_stats["极差的时间变化率"] = hourly_stats["极差"].pct_change().fillna(0)
+    if "极差" in resampled_stats.columns:
+        resampled_stats["极差的时间变化率"] = resampled_stats["极差"].pct_change().fillna(0)
 
     # d. 重命名，让列名更规范
     #    只有当“中位数”被点了，我们才需要重命名它
-    if "中位数" in hourly_stats.columns:
-        hourly_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
+    if "中位数" in resampled_stats.columns:
+        resampled_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
 
     print("指定的特征计算完成！")
-    return hourly_stats
+    return resampled_stats
 
 
 def recalculate_single_hour_features(raw_data_series: pd.Series) -> pd.Series:
@@ -86,7 +89,6 @@ def recalculate_single_hour_features(raw_data_series: pd.Series) -> pd.Series:
     if raw_data_series.empty:
         return pd.Series(dtype="object")
 
-    # 我们在这里“手动”地、一步步地重新计算所有特征
     recalculated_features = pd.Series(
         {
             "均值": raw_data_series.mean(),
@@ -97,7 +99,6 @@ def recalculate_single_hour_features(raw_data_series: pd.Series) -> pd.Series:
             "Q3": raw_data_series.quantile(0.75),
             "P10": raw_data_series.quantile(0.10),
             "极差": raw_data_series.max() - raw_data_series.min(),
-            # 这里复用了我们的辅助函数，保证了检验标准和生产标准一致
             "超过Q3占时比": calculate_percent_above_q3(raw_data_series),
         }
     )

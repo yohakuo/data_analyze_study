@@ -1,6 +1,7 @@
 # 与数据读取和写入相关的操作,包括从influxdb读取数据,以及将计算好的特征存入clickhouse
 
 import datetime
+import uuid
 
 import clickhouse_connect
 from influxdb_client import InfluxDBClient
@@ -47,7 +48,10 @@ def get_timeseries_data(
             range_clause = f"start: {start_utc_str}, stop: {stop_utc_str}"
 
     with InfluxDBClient(
-        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
+        url=config.INFLUXDB_URL,
+        token=config.INFLUXDB_TOKEN,
+        org=config.INFLUXDB_ORG,
+        timeout=90_000,  # 设置超时为 90,000 毫秒 (90秒)
     ) as client:
         query = f'''
         from(bucket: "{config.INFLUXDB_BUCKET}")
@@ -88,7 +92,7 @@ def store_features_to_clickhouse(
     stats_cycle: str,
 ):
     """
-    接收【宽格式】的特征 DataFrame，将其转换为【长格式】，并存入 ClickHouse。
+    接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
     """
     if df.empty:
         print("\n特征数据为空，跳过存储。")
@@ -97,7 +101,6 @@ def store_features_to_clickhouse(
     print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
 
     try:
-        # (前面的“宽”转“长”、添加元数据、重命名列等代码都保持不变)
         df_long = df.reset_index()
         feature_columns = [col for col in df.columns if col not in ["分析周期"]]
         df_long = pd.melt(
@@ -107,13 +110,17 @@ def store_features_to_clickhouse(
             var_name="feature_key",
             value_name="feature_value",
         )
+
+        df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
         df_long["temple_id"] = temple_id
         df_long["device_id"] = device_id
         df_long["monitored_variable"] = field_name
         df_long["stats_cycle"] = stats_cycle
         df_long["created_at"] = datetime.datetime.now()
         df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
+
         final_columns = [
+            "stat_id",
             "temple_id",
             "device_id",
             "stats_start_time",
@@ -124,8 +131,9 @@ def store_features_to_clickhouse(
             "created_at",
         ]
         df_to_insert = df_long[final_columns]
+        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
+        df_to_insert["standby_field01"] = ""
 
-        # (连接 ClickHouse 和建表的代码保持不变)
         client = clickhouse_connect.get_client(
             host=config.CLICKHOUSE_HOST,
             port=config.CLICKHOUSE_PORT,
@@ -136,22 +144,22 @@ def store_features_to_clickhouse(
         create_table_query = f"""
         CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
         (
-            `stat_id` BIGINT, `temple_id` CHAR(20), `device_id` CHAR(30),
-            `stats_start_time` DATETIME, `monitored_variable` CHAR(20),
-            `stats_cycle` CHAR(10), `feature_key` CHAR(30),
-            `feature_value` VARCHAR(30), `standby_field01` CHAR(30), `created_at` TIMESTAMP
+            `stat_id` UUID,
+            `temple_id` CHAR(20),
+            `device_id` CHAR(30),
+            `stats_start_time` DATETIME,
+            `monitored_variable` CHAR(20),
+            `stats_cycle` CHAR(10),
+            `feature_key` CHAR(30),
+            `feature_value` VARCHAR(30),
+            `standby_field01` CHAR(30),
+            `created_at` TIMESTAMP
         ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
         """
         client.command(create_table_query)
 
-        # 在插入数据之前，转换数据类型
-        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
-
-        # 5. 插入转换后的长格式数据
         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
-
-        print(f"✅ 数据成功存入 ClickHouse 的表 '{table_name}'！")
 
     except Exception as e:
         print(f"❌ 存入 ClickHouse 时发生错误: {e}")
