@@ -49,7 +49,6 @@ def calculate_features(
         f"\n正在为字段 '{field_name}' 以 '{freq}' 的频率计算指定的 {len(feature_list)} 个特征..."
     )
 
-    # a. 从我们的“大菜单”中，只挑出这次“点菜单”上有的菜
     agg_functions = {
         feature: FEATURE_CALCULATORS[feature]
         for feature in feature_list
@@ -60,10 +59,9 @@ def calculate_features(
         print("错误：指定的特征都不在可计算的列表中。")
         return pd.DataFrame()
 
-    # b. 使用 .agg() 一次性计算所有被选中的特征
+    # 使用 .agg() 一次性计算所有被选中的特征
     resampled_stats = df[field_name].resample(freq).agg(**agg_functions)
 
-    # c. 计算依赖于其他结果的衍生特征
     #    只有当“最大值”和“最小值”都被点了，我们才能算“极差”
     if "最大值" in resampled_stats.columns and "最小值" in resampled_stats.columns:
         resampled_stats["极差"] = resampled_stats["最大值"] - resampled_stats["最小值"]
@@ -72,8 +70,7 @@ def calculate_features(
     if "极差" in resampled_stats.columns:
         resampled_stats["极差的时间变化率"] = resampled_stats["极差"].pct_change().fillna(0)
 
-    # d. 重命名，让列名更规范
-    #    只有当“中位数”被点了，我们才需要重命名它
+    #    只有当“中位数”被点了，重命名它
     if "中位数" in resampled_stats.columns:
         resampled_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
 
