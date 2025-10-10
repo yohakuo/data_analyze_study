@@ -64,11 +64,9 @@ def calculate_features(
     resampled_stats = df[field_name].resample(freq).agg(**agg_functions)
 
     # c. 计算依赖于其他结果的衍生特征
-    #    只有当“最大值”和“最小值”都被点了，我们才能算“极差”
     if "最大值" in resampled_stats.columns and "最小值" in resampled_stats.columns:
         resampled_stats["极差"] = resampled_stats["最大值"] - resampled_stats["最小值"]
 
-    #    只有当“极差”被计算出来了，我们才能算“极差的时间变化率”
     if "极差" in resampled_stats.columns:
         resampled_stats["极差的时间变化率"] = resampled_stats["极差"].pct_change().fillna(0)
 
@@ -77,7 +75,6 @@ def calculate_features(
     if "中位数" in resampled_stats.columns:
         resampled_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
 
-    print("指定的特征计算完成！")
     return resampled_stats
 
 
