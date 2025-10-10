@@ -1,10 +1,11 @@
 import csv
-import os
 from datetime import datetime
+import os
 from zoneinfo import ZoneInfo
 
 from influxdb_client import InfluxDBClient, Point, WriteOptions
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 from src import config
 
 
@@ -70,9 +71,7 @@ def import_csv_to_influx(csv_filepath: str):
                             count = 0
 
                     except Exception as e:
-                        print(
-                            f"    处理文件 {csv_filepath} 的第 {total_count + 1} 行时出错: {e}"
-                        )
+                        print(f"    处理文件 {csv_filepath} 的第 {total_count + 1} 行时出错: {e}")
 
                 # 写入最后一批不足 batch_size 的数据
                 if points_buffer:
