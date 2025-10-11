@@ -2,6 +2,8 @@ import datetime
 import time
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from src.dataset import get_timeseries_data, store_features_to_clickhouse
 from src.features import calculate_features
 
@@ -24,15 +26,24 @@ FEATURE_KEY = "mean"
 
 def main():
     # start_time = time.perf_counter()
-    raw_df = get_timeseries_data(
-        measurement_name=MEASUREMENT_NAME,
-        field_name=FIELD_NAME,
-        start_time=None,  # ANALYSIS_START_TIME_LOCAL,
-        stop_time=None,  # ANALYSIS_STOP_TIME_LOCAL,
-    )
-    if raw_df.empty:
-        print("没有提取到数据，流程结束。")
-        return
+    # raw_df = get_timeseries_data(
+    #     measurement_name=MEASUREMENT_NAME,
+    #     field_name=FIELD_NAME,
+    #     start_time=None,  # ANALYSIS_START_TIME_LOCAL,
+    #     stop_time=None,  # ANALYSIS_STOP_TIME_LOCAL,
+    # )
+    # if raw_df.empty:
+    #     print("没有提取到数据，流程结束。")
+    #     return
+
+    DATA_FILENAME = "D:\\Projects\\ts_fe\\data\\processed\\preprocessed_data.parquet"
+
+    try:
+        raw_df = pd.read_parquet(DATA_FILENAME)
+        print("加载成功！")
+    except FileNotFoundError:
+        print(f"错误：找不到文件 '{DATA_FILENAME}'。")
+        exit()
 
     FEATURE_LIST = ["均值"]
     humidity_features_wide = calculate_features(
