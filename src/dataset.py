@@ -82,6 +82,33 @@ def get_timeseries_data(
             return pd.DataFrame()
 
 
+def get_clickhouse_client(target: str = "local"):
+    """
+    根据目标名称，创建并返回一个 ClickHouse 客户端。
+    Args:
+        target (str, optional): 目标数据库。可以是 'local' 或 'shared'。默认为 'local'。
+    Returns:
+        A clickhouse_connect client object.
+    """
+    print(f"  ► 正在创建指向 '{target}' 数据库的连接...")
+    if target == "local":
+        return clickhouse_connect.get_client(
+            host=config.CLICKHOUSE_HOST,
+            port=config.CLICKHOUSE_PORT,
+            username=config.CLICKHOUSE_USER,
+            password=config.CLICKHOUSE_PASSWORD,
+        )
+    elif target == "shared":
+        return clickhouse_connect.get_client(
+            host=config.SHARED_SERVER_HOST,
+            port=config.SHARED_SERVER_PORT,
+            username=config.SHARED_SERVER_USER,
+            password=config.SHARED_SERVER_PASSWORD,
+        )
+    else:
+        raise ValueError(f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。")
+
+
 @timing_decorator
 def store_features_to_clickhouse(
     df: pd.DataFrame,
@@ -140,6 +167,83 @@ def store_features_to_clickhouse(
             username=config.CLICKHOUSE_USER,
             password=config.CLICKHOUSE_PASSWORD,
         )
+        client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
+        (
+            `stat_id` UUID,
+            `temple_id` CHAR(20),
+            `device_id` CHAR(30),
+            `stats_start_time` DATETIME,
+            `monitored_variable` CHAR(20),
+            `stats_cycle` CHAR(10),
+            `feature_key` CHAR(30),
+            `feature_value` VARCHAR(30),
+            `standby_field01` CHAR(30),
+            `created_at` TIMESTAMP
+        ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
+        """
+        client.command(create_table_query)
+
+        print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
+        client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
+
+    except Exception as e:
+        print(f"❌ 存入 ClickHouse 时发生错误: {e}")
+
+
+def store_features_to_center_clickhouse(
+    df: pd.DataFrame,
+    client: clickhouse_connect.driver.Client,
+    table_name: str,
+    field_name: str,
+    device_id: str,
+    temple_id: str,
+    stats_cycle: str,
+):
+    """
+    接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
+    """
+    if df.empty:
+        print("\n特征数据为空，跳过存储。")
+        return
+
+    print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
+
+    try:
+        df_long = df.reset_index()
+        feature_columns = [col for col in df.columns if col not in ["分析周期"]]
+        df_long = pd.melt(
+            df_long,
+            id_vars=["_time"],
+            value_vars=feature_columns,
+            var_name="feature_key",
+            value_name="feature_value",
+        )
+
+        df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
+        df_long["temple_id"] = temple_id
+        df_long["device_id"] = device_id
+        df_long["monitored_variable"] = field_name
+        df_long["stats_cycle"] = stats_cycle
+        df_long["created_at"] = datetime.datetime.now()
+        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
+
+        final_columns = [
+            "stat_id",
+            "temple_id",
+            "device_id",
+            "stats_start_time",
+            "monitored_variable",
+            "stats_cycle",
+            "feature_key",
+            "feature_value",
+            "created_at",
+        ]
+        df_to_insert = df_long[final_columns]
+        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
+        df_to_insert["standby_field01"] = ""
+
         client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
         create_table_query = f"""
         CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
