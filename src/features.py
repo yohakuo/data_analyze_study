@@ -66,7 +66,6 @@ def calculate_features(
     if "最大值" in resampled_stats.columns and "最小值" in resampled_stats.columns:
         resampled_stats["极差"] = resampled_stats["最大值"] - resampled_stats["最小值"]
 
-    #    只有当“极差”被计算出来了，我们才能算“极差的时间变化率”
     if "极差" in resampled_stats.columns:
         resampled_stats["极差的时间变化率"] = resampled_stats["极差"].pct_change().fillna(0)
 
@@ -74,7 +73,6 @@ def calculate_features(
     if "中位数" in resampled_stats.columns:
         resampled_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
 
-    print("指定的特征计算完成！")
     return resampled_stats
 
 

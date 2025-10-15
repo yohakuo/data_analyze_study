@@ -82,6 +82,33 @@ def get_timeseries_data(
             return pd.DataFrame()
 
 
+def get_clickhouse_client(target: str = "local"):
+    """
+    根据目标名称，创建并返回一个 ClickHouse 客户端。
+    Args:
+        target (str, optional): 目标数据库。可以是 'local' 或 'shared'。默认为 'local'。
+    Returns:
+        A clickhouse_connect client object.
+    """
+    print(f"  ► 正在创建指向 '{target}' 数据库的连接...")
+    if target == "local":
+        return clickhouse_connect.get_client(
+            host=config.CLICKHOUSE_HOST,
+            port=config.CLICKHOUSE_PORT,
+            username=config.CLICKHOUSE_USER,
+            password=config.CLICKHOUSE_PASSWORD,
+        )
+    elif target == "shared":
+        return clickhouse_connect.get_client(
+            host=config.SHARED_SERVER_HOST,
+            port=config.SHARED_SERVER_PORT,
+            username=config.SHARED_SERVER_USER,
+            password=config.SHARED_SERVER_PASSWORD,
+        )
+    else:
+        raise ValueError(f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。")
+
+
 @timing_decorator
 def store_features_to_clickhouse(
     df: pd.DataFrame,
@@ -165,6 +192,83 @@ def store_features_to_clickhouse(
         print(f"❌ 存入 ClickHouse 时发生错误: {e}")
 
 
+def store_features_to_center_clickhouse(
+    df: pd.DataFrame,
+    client: clickhouse_connect.driver.Client,
+    table_name: str,
+    field_name: str,
+    device_id: str,
+    temple_id: str,
+    stats_cycle: str,
+):
+    """
+    接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
+    """
+    if df.empty:
+        print("\n特征数据为空，跳过存储。")
+        return
+
+    print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
+
+    try:
+        df_long = df.reset_index()
+        feature_columns = [col for col in df.columns if col not in ["分析周期"]]
+        df_long = pd.melt(
+            df_long,
+            id_vars=["_time"],
+            value_vars=feature_columns,
+            var_name="feature_key",
+            value_name="feature_value",
+        )
+
+        df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
+        df_long["temple_id"] = temple_id
+        df_long["device_id"] = device_id
+        df_long["monitored_variable"] = field_name
+        df_long["stats_cycle"] = stats_cycle
+        df_long["created_at"] = datetime.datetime.now()
+        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
+
+        final_columns = [
+            "stat_id",
+            "temple_id",
+            "device_id",
+            "stats_start_time",
+            "monitored_variable",
+            "stats_cycle",
+            "feature_key",
+            "feature_value",
+            "created_at",
+        ]
+        df_to_insert = df_long[final_columns]
+        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
+        df_to_insert["standby_field01"] = ""
+
+        client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
+        (
+            `stat_id` UUID,
+            `temple_id` CHAR(20),
+            `device_id` CHAR(30),
+            `stats_start_time` DATETIME,
+            `monitored_variable` CHAR(20),
+            `stats_cycle` CHAR(10),
+            `feature_key` CHAR(30),
+            `feature_value` VARCHAR(30),
+            `standby_field01` CHAR(30),
+            `created_at` TIMESTAMP
+        ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
+        """
+        client.command(create_table_query)
+
+        print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
+        client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
+
+    except Exception as e:
+        print(f"❌ 存入 ClickHouse 时发生错误: {e}")
+
+
 def get_latest_timestamp_from_clickhouse() -> pd.Timestamp:
     """查询 ClickHouse，获取已有特征数据的最新时间戳。"""
     try:
@@ -188,3 +292,88 @@ def get_latest_timestamp_from_clickhouse() -> pd.Timestamp:
     except Exception as e:
         print(f"查询 ClickHouse 最新时间戳时出错: {e}")
         return None
+
+
+## 预处理
+
+
+def impute_missing_values(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    对重采样后的数据进行插值和填充。
+    规则: ffill -> bfill -> dropna(all) -> fillna(0)
+
+    Args:
+        df (pd.DataFrame): 带有时间索引的DataFrame。
+
+    Returns:
+        pd.DataFrame: 填充缺失值后的DataFrame。
+    """
+    # 规则 1: 使用 ffill() / bfill() 补齐分钟级缺失
+    df_filled = df.ffill().bfill()
+    # 规则 2: 删除完全为空的行
+    df_dropped = df_filled.dropna(how="all")
+    # 规则 3: 对初始无法计算的值补零
+    df_final = df_dropped.fillna(0)
+    return df_final
+
+
+def convert_timezone_and_add_column(df: pd.DataFrame, tz: str = "Asia/Shanghai") -> pd.DataFrame:
+    """
+    将DataFrame的时间索引从UTC转换为指定时区，并添加一个格式化的时间字符串列。
+
+    Args:
+        df (pd.DataFrame): 带有UTC时间索引的DataFrame。
+        tz (str, optional): 目标时区. 默认为 'Asia/Shanghai'.
+
+    Returns:
+        pd.DataFrame: 转换时区并添加了新时间列的DataFrame。
+    """
+    if df.index.tz is None:
+        # 如果索引是naive的，先本地化为UTC
+        df = df.tz_localize("UTC")
+
+    df_converted = df.tz_convert(tz)
+    df_converted["stats_start_time"] = df_converted.index.strftime("%Y-%m-%d %H:%M:%S")
+    return df_converted
+
+
+def preprocess_timeseries_data(
+    df: pd.DataFrame,
+    resample_freq: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+) -> pd.DataFrame:
+    """
+    对原始时间序列数据进行标准化预处理：
+    1. 确保时间索引是UTC时区。
+    2. 按照指定频率和起止时间，创建完整的、连续的时间轴。
+    3. 使用 ffill 和 bfill 填充缺失值。
+    4. 将最终的时间索引转换为本地时区（东八区）。
+    """
+    if df.empty:
+        return df
+
+    if df.index.tz is None:
+        df = df.tz_localize("UTC")
+    else:
+        df = df.tz_convert("UTC")
+
+    # 确保 start_time 和 end_time 也是 UTC
+    start_utc = start_time.astimezone(datetime.timezone.utc)
+    end_utc = end_time.astimezone(datetime.timezone.utc)
+
+    # 1. 创建一个完整的目标时间范围
+    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
+
+    # 2. 对 DataFrame 进行 reindex，使其包含所有期望的时间点
+    reindexed_df = df.reindex(full_range)
+
+    # 3. 使用 ffill 和 bfill 填充所有缺失值
+    filled_df = reindexed_df.ffill().bfill()
+
+    # 4. 转换回本地时区
+    final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
+    final_df.index.name = "_time"
+
+    print(f"  ► 处理完成。处理后的数据共有 {len(final_df)} 条记录。")
+    return final_df
