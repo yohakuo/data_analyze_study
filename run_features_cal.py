@@ -4,7 +4,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.dataset import get_timeseries_data, store_features_to_clickhouse
+from src.dataset import (
+    get_clickhouse_client,
+    get_timeseries_data,
+    store_features_to_center_clickhouse,
+    store_features_to_clickhouse,
+)
 from src.features import calculate_features
 
 # 查询数据--get_timeseries_data
@@ -14,7 +19,7 @@ ANALYSIS_START_TIME_LOCAL = datetime.datetime(2022, 1, 4, tzinfo=ZoneInfo("Asia/
 ANALYSIS_STOP_TIME_LOCAL = datetime.datetime(2022, 1, 14, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 # 存储--store_features_to_clickhouse
-FEATURES_TABLE = "features_caculate"  # "features_caculate"
+FEATURES_TABLE = "features_caculate_dn"  # "features_caculate"
 
 ## 元数据字段
 TEMPLE_ID = "045"
@@ -26,12 +31,16 @@ FEATURE_KEY = "mean"
 
 def main():
     # start_time = time.perf_counter()
+    # TARGET_DATABASE = "shared"  #  'local'
+    # db_client=get_clickhouse_client(target=TARGET_DATABASE)\\
+
     # raw_df = get_timeseries_data(
     #     measurement_name=MEASUREMENT_NAME,
     #     field_name=FIELD_NAME,
     #     start_time=None,  # ANALYSIS_START_TIME_LOCAL,
     #     stop_time=None,  # ANALYSIS_STOP_TIME_LOCAL,
     # )
+
     # if raw_df.empty:
     #     print("没有提取到数据，流程结束。")
     #     return
@@ -50,6 +59,15 @@ def main():
         raw_df, field_name=FIELD_NAME, feature_list=FEATURE_LIST, freq=FREQ
     )
 
+    # store_features_to_center_clickhouse(
+    #     df=humidity_features_wide,
+    #     client=db_client,
+    #     table_name=FEATURES_TABLE,
+    #     field_name=FIELD_NAME,
+    #     device_id=DEVICE_ID,
+    #     temple_id=TEMPLE_ID,
+    #     stats_cycle=STATS_CYCLE,
+    # )
     store_features_to_clickhouse(
         df=humidity_features_wide,
         table_name=FEATURES_TABLE,
@@ -58,7 +76,6 @@ def main():
         temple_id=TEMPLE_ID,
         stats_cycle=STATS_CYCLE,
     )
-
     # end_time = time.perf_counter()
     # print(f"\n🎉 ** 总耗时: {end_time - start_time:.2f} 秒 ** 🎉")
 

@@ -158,7 +158,9 @@ def store_features_to_clickhouse(
             "created_at",
         ]
         df_to_insert = df_long[final_columns]
-        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
+        df_to_insert["feature_value"] = pd.to_numeric(
+            df_to_insert["feature_value"], errors="coerce"
+        )
         df_to_insert["standby_field01"] = ""
 
         client = clickhouse_connect.get_client(
@@ -184,6 +186,23 @@ def store_features_to_clickhouse(
         ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
         """
         client.command(create_table_query)
+
+        # 在存入 ClickHouse 前，先将数据保存到 CSV 文件
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_filename = f"{table_name}_{timestamp}.csv"
+        print(f"  ► 正在将数据保存到 CSV 文件: {csv_filename} ...")
+        try:
+            df_to_insert.to_csv(
+                csv_filename, index=False, encoding="utf-8-sig", float_format="%.2f"
+            )
+            print(f"  ✔ CSV 文件保存成功: {csv_filename}")
+        except Exception as csv_error:
+            print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
+
+        # 写入CSV之后，将数值转换为格式化的字符串
+        df_to_insert["feature_value"] = df_to_insert["feature_value"].map("{:.2f}".format)
+        # 处理可能因coerce产生的NaN值，将其转换为空字符串
+        df_to_insert['feature_value'] = df_to_insert['feature_value'].replace('nan', '')
 
         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
@@ -224,10 +243,10 @@ def store_features_to_center_clickhouse(
         df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
         df_long["temple_id"] = temple_id
         df_long["device_id"] = device_id
+        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
         df_long["monitored_variable"] = field_name
         df_long["stats_cycle"] = stats_cycle
         df_long["created_at"] = datetime.datetime.now()
-        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
 
         final_columns = [
             "stat_id",
@@ -261,6 +280,23 @@ def store_features_to_center_clickhouse(
         ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
         """
         client.command(create_table_query)
+
+        # 存入 ClickHouse 前，先将数据保存到 CSV 文件
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_filename = f"{table_name}_{device_id}_{timestamp}.csv"
+
+        try:
+            df_for_csv = df_to_insert.copy()
+            df_for_csv["feature_value"] = pd.to_numeric(
+                df_for_csv["feature_value"], errors="coerce"
+            )
+            df_for_csv.dropna(subset=["feature_value"], inplace=True)
+            df_for_csv["feature_value"] = df_for_csv["feature_value"].map("{:.2f}".format)
+
+            df_for_csv.to_csv(csv_filename, index=False, encoding="utf-8-sig")
+            print(f"  ✔ CSV 文件保存成功: {csv_filename}")
+        except Exception as csv_error:
+            print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
 
         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
