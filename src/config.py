@@ -15,10 +15,8 @@ DATABASE_NAME = "feature_db"
 HOURLY_FEATURES_TABLE = "humidity_hourly_features_DongNan"  # "humidity_hourly_features_XiBei"
 
 # --- 导入CSV文件配置 ---
-INFLUX_MEASUREMENT_NAME = "XiBei"
+INFLUX_MEASUREMENT_NAME = "DongNan"  # DongNan、XiBei
 LOCAL_TIMEZONE = "Asia/Shanghai"
-RAW_DATA_DIR = "data/raw"
-DATA_SUBFOLDER_TO_IMPORT = "xibei"  # 如果要导入子文件夹，指定子文件夹名称，否则留空
 
 # CSV文件的结构定义
 TIMESTAMP_COLUMN = "采集时间"
@@ -26,7 +24,7 @@ TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M:%S"
 FIELD_COLUMNS = ["空气温度（℃）", "空气湿度（%）"]
 TAG_COLUMNS = []
 
-# 输出相关设置
+# --- 输出相关设置 ---
 PROCESSED_DATA_PATH = "data/processed/"
 FIGURES_PATH = "figures/"
 
@@ -42,6 +40,6 @@ FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃�
 # 字典的 value 是一个列表，包含了用户可能使用的所有别名
 FIELD_ALIAS_MAP = {
     "空气湿度（%）": ["湿度", "相对湿度", "潮湿程度", "空气湿度"],
-    "空气温度": ["温度", "气温", "室温"]
+    "空气温度": ["温度", "气温", "室温"],
     # 未来可以继续添加其他字段，比如 "二氧化碳浓度": ["二氧化碳", "CO2"]
 }
