@@ -13,8 +13,8 @@ OUTPUT_DIR = os.path.join("reports", "figures")
 
 
 START_DATE = "2021-01-01"
-END_DATE = "2025-01-01"
-TRAIN_TEST_SPLIT_DATE = "2024-01-01"
+END_DATE = "2024-01-01"
+TRAIN_TEST_SPLIT_DATE = "2023-05-01"
 
 
 def run_analysis():

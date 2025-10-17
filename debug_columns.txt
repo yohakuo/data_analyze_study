@@ -1,6 +1,0 @@
---- Columns in my_hour_average.csv ---Index(['stat_id,"temple_id","device_id","stats_start_time","monitored_variable","stats_cycle","feature_key","feature_value","standby_field01","created_at"'], dtype='object')
-
---- Columns in hour_average.csv ---Index(['stat_id', 'temple_id', 'device_id', 'stats_start_time',
-       'monitored_variable', 'stats_cycle', 'feature_key', 'feature_value',
-       'standby_field01', 'created_at'],
-      dtype='object')
