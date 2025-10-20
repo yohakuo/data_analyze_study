@@ -17,11 +17,9 @@ MEASUREMENT_NAME = "DongNan"
 FIELD_NAME = "空气湿度（%）"  # "空气湿度（%）"、"空气温度（℃）"
 ANALYSIS_START_TIME_LOCAL = datetime.datetime(2022, 1, 4, tzinfo=ZoneInfo("Asia/Shanghai"))
 ANALYSIS_STOP_TIME_LOCAL = datetime.datetime(2022, 1, 14, tzinfo=ZoneInfo("Asia/Shanghai"))
-
 # 存储--store_features_to_clickhouse
 FEATURES_TABLE = "features_caculate_dn"  # "features_caculate"
-
-## 元数据字段
+# 元数据字段
 TEMPLE_ID = "045"
 DEVICE_ID = "201A"
 FREQ = "h"  # h\D\W\M
@@ -59,15 +57,6 @@ def main():
         raw_df, field_name=FIELD_NAME, feature_list=FEATURE_LIST, freq=FREQ
     )
 
-    # store_features_to_center_clickhouse(
-    #     df=humidity_features_wide,
-    #     client=db_client,
-    #     table_name=FEATURES_TABLE,
-    #     field_name=FIELD_NAME,
-    #     device_id=DEVICE_ID,
-    #     temple_id=TEMPLE_ID,
-    #     stats_cycle=STATS_CYCLE,
-    # )
     store_features_to_clickhouse(
         df=humidity_features_wide,
         table_name=FEATURES_TABLE,

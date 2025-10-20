@@ -1,18 +1,10 @@
 # 存放所有可能会变化的配置信息，比如数据库地址、文件名、密码等
 
-# ---  InfluxDB 连接配置 ---
+# ---  InfluxDB 本地连接配置 ---
 INFLUXDB_URL = "http://localhost:8086"
 INFLUXDB_TOKEN = "study2025"
 INFLUXDB_ORG = "task3"
 INFLUXDB_BUCKET = "cave45"
-
-# --- ClickHouse 连接配置 ---
-CLICKHOUSE_HOST = "localhost"
-CLICKHOUSE_PORT = 8123
-CLICKHOUSE_USER = "default"
-CLICKHOUSE_PASSWORD = "study2025"
-DATABASE_NAME = "feature_db"
-HOURLY_FEATURES_TABLE = "humidity_hourly_features_DongNan"  # "humidity_hourly_features_XiBei"
 
 # --- 导入CSV文件配置 ---
 INFLUX_MEASUREMENT_NAME = "DongNan"  # DongNan、XiBei
@@ -23,6 +15,15 @@ TIMESTAMP_COLUMN = "采集时间"
 TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M:%S"
 FIELD_COLUMNS = ["空气温度（℃）", "空气湿度（%）"]
 TAG_COLUMNS = []
+
+
+# --- ClickHouse 本地连接配置 ---
+CLICKHOUSE_HOST = "localhost"
+CLICKHOUSE_PORT = 8123
+CLICKHOUSE_USER = "default"
+CLICKHOUSE_PASSWORD = "study2025"
+DATABASE_NAME = "feature_db"
+HOURLY_FEATURES_TABLE = "humidity_hourly_features_DongNan"  # "humidity_hourly_features_XiBei"
 
 # --- 输出相关设置 ---
 PROCESSED_DATA_PATH = "data/processed/"
@@ -35,11 +36,17 @@ FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃�
 # ================================================================
 # ===== 实验室中 ClickHouse 服务器配置 =====
 # ================================================================
-SHARED_SERVER_HOST = "192.168.121.57"
-SHARED_SERVER_PORT = 8123
-SHARED_SERVER_USER = "root"
-SHARED_SERVER_PASSWORD = "123456"
+CLICKHOUSE_SHARED_HOST = "192.168.121.57"
+CLICKHOUSE_SHARED_PORT = "5050"
+CLICKHOUSE_SHARED_USER = "root"
+CLICKHOUSE_SHARED_PASSWORD = "123456"
+CLICKHOUSE_SHARED_DB = "Dunhuang_DataCenter"
 
+CLICKHOUSE_MEASUREMENT_NAME = "sensor_temperature_humidity"
+CLICKHOUSE_FIELD_NAME = "..."  # '空气湿度（%）'
+TEMPLE_ID = "045"
+DEVICE_ID = "201A"
+STATS_CYCLE = ""
 
 # ================================================================
 # ===== 字段别名/同义词映射表 =====

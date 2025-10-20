@@ -1,14 +1,95 @@
-# 与数据读取和写入相关的操作,包括从influxdb读取数据,以及将计算好的特征存入clickhouse
+# 与数据库连接、读取和写入相关的操作,包括从influxdb读取数据,以及将计算好的特征存入clickhouse
 
+import csv
 import datetime
+import os
 import uuid
+from zoneinfo import ZoneInfo
 
-import clickhouse_connect
-from influxdb_client import InfluxDBClient
+from clickhouse_driver import Client
+from influxdb_client import InfluxDBClient, Point
+from influxdb_client.client.write_api import SYNCHRONOUS
+import numpy as np
 import pandas as pd
 
 from src import config
 from src.utils import timing_decorator
+
+
+## influxdb
+def import_csv_to_influx(csv_filepath: str):
+    """
+    读取指定的 CSV 文件，并将其内容导入到 InfluxDB。
+    """
+    # 将配置项从 config 模块中读入
+    local_tz = ZoneInfo(config.LOCAL_TIMEZONE)
+
+    # 建立 InfluxDB 连接
+    with InfluxDBClient(
+        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
+    ) as client:
+        write_api = client.write_api(write_options=SYNCHRONOUS)
+        points_buffer = []
+        batch_size = 5000  # 批处理大小
+        count = 0
+        total_count = 0
+
+        try:
+            with open(csv_filepath, "r", encoding="gbk") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for row in reader:
+                    try:
+                        point = Point(config.INFLUX_MEASUREMENT_NAME)
+
+                        for tag_key in config.TAG_COLUMNS:
+                            point.tag(tag_key, row.get(tag_key))
+
+                        for field_key in config.FIELD_COLUMNS:
+                            try:
+                                field_value = float(row[field_key])
+                                point.field(field_key, field_value)
+                            except (ValueError, TypeError, KeyError):
+                                continue  # 如果某个字段为空或格式错误，跳过该字段
+
+                        naive_dt = datetime.strptime(
+                            row[config.TIMESTAMP_COLUMN], config.TIMESTAMP_FORMAT
+                        )
+                        aware_dt = naive_dt.replace(tzinfo=local_tz)
+                        point.time(aware_dt)
+
+                        points_buffer.append(point)
+                        count += 1
+                        total_count += 1
+
+                        if count >= batch_size:
+                            write_api.write(
+                                bucket=config.INFLUXDB_BUCKET,
+                                org=config.INFLUXDB_ORG,
+                                record=points_buffer,
+                            )
+                            print(f"  ...已写入 {total_count} 行...")
+                            points_buffer = []
+                            count = 0
+
+                    except Exception as e:
+                        print(f"    处理文件 {csv_filepath} 的第 {total_count + 1} 行时出错: {e}")
+
+                # 写入最后一批不足 batch_size 的数据
+                if points_buffer:
+                    write_api.write(
+                        bucket=config.INFLUXDB_BUCKET,
+                        org=config.INFLUXDB_ORG,
+                        record=points_buffer,
+                    )
+
+                print(
+                    f"✅ 文件 '{os.path.basename(csv_filepath)}' 导入成功！总共处理了 {total_count} 行数据。"
+                )
+
+        except FileNotFoundError:
+            print(f"错误：找不到文件 '{csv_filepath}'。")
+        except Exception as e:
+            print(f"错误：读取或写入文件 '{csv_filepath}' 时发生严重错误: {e}")
 
 
 @timing_decorator
@@ -27,9 +108,6 @@ def get_timeseries_data(
         field_name (str): 要查询的字段名。
         start_time (datetime, optional): 查询的开始时间 (带时区)。默认为 None (从头开始)。
         stop_time (datetime, optional): 查询的结束时间 (带时区)。默认为 None (直到现在)。
-
-    Returns:
-        pd.DataFrame: 清理好的时间序列数据。
     """
 
     if start_time is None:
@@ -82,297 +160,228 @@ def get_timeseries_data(
             return pd.DataFrame()
 
 
-def get_clickhouse_client(target: str = "local"):
-    """
-    根据目标名称，创建并返回一个 ClickHouse 客户端。
-    Args:
-        target (str, optional): 目标数据库。可以是 'local' 或 'shared'。默认为 'local'。
-    Returns:
-        A clickhouse_connect client object.
-    """
-    print(f"  ► 正在创建指向 '{target}' 数据库的连接...")
-    if target == "local":
-        return clickhouse_connect.get_client(
-            host=config.CLICKHOUSE_HOST,
-            port=config.CLICKHOUSE_PORT,
-            username=config.CLICKHOUSE_USER,
-            password=config.CLICKHOUSE_PASSWORD,
-        )
-    elif target == "shared":
-        return clickhouse_connect.get_client(
-            host=config.SHARED_SERVER_HOST,
-            port=config.SHARED_SERVER_PORT,
-            username=config.SHARED_SERVER_USER,
-            password=config.SHARED_SERVER_PASSWORD,
-        )
-    else:
-        raise ValueError(f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。")
+## clickhouse
 
 
 @timing_decorator
-def store_features_to_clickhouse(
+# def store_features_to_clickhouse(
+#     df: pd.DataFrame,
+#     table_name: str,
+#     field_name: str,
+#     device_id: str,
+#     temple_id: str,
+#     stats_cycle: str,
+# ):
+#     """
+#     接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
+#     """
+#     if df.empty:
+#         print("\n特征数据为空，跳过存储。")
+#         return
+
+#     print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
+
+#     try:
+#         df_long = df.reset_index()
+#         feature_columns = [col for col in df.columns if col not in ["分析周期"]]
+#         df_long = pd.melt(
+#             df_long,
+#             id_vars=["_time"],
+#             value_vars=feature_columns,
+#             var_name="feature_key",
+#             value_name="feature_value",
+#         )
+
+#         df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
+#         df_long["temple_id"] = temple_id
+#         df_long["device_id"] = device_id
+#         df_long["monitored_variable"] = field_name
+#         df_long["stats_cycle"] = stats_cycle
+#         df_long["created_at"] = datetime.datetime.now()
+#         df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
+
+#         final_columns = [
+#             "stat_id",
+#             "temple_id",
+#             "device_id",
+#             "stats_start_time",
+#             "monitored_variable",
+#             "stats_cycle",
+#             "feature_key",
+#             "feature_value",
+#             "created_at",
+#         ]
+#         df_to_insert = df_long[final_columns]
+#         df_to_insert["feature_value"] = pd.to_numeric(
+#             df_to_insert["feature_value"], errors="coerce"
+#         )
+#         df_to_insert["standby_field01"] = ""
+
+#         client = clickhouse_connect.get_client(
+#             host=config.CLICKHOUSE_HOST,
+#             port=config.CLICKHOUSE_PORT,
+#             username=config.CLICKHOUSE_USER,
+#             password=config.CLICKHOUSE_PASSWORD,
+#         )
+#         client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
+#         create_table_query = f"""
+#         CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
+#         (
+#             `stat_id` UUID,
+#             `temple_id` CHAR(20),
+#             `device_id` CHAR(30),
+#             `stats_start_time` DATETIME,
+#             `monitored_variable` CHAR(20),
+#             `stats_cycle` CHAR(10),
+#             `feature_key` CHAR(30),
+#             `feature_value` VARCHAR(30),
+#             `standby_field01` CHAR(30),
+#             `created_at` TIMESTAMP
+#         ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
+#         """
+#         client.command(create_table_query)
+
+#         # 在存入 ClickHouse 前，先将数据保存到 CSV 文件
+#         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+#         csv_filename = f"{table_name}_{timestamp}.csv"
+#         print(f"  ► 正在将数据保存到 CSV 文件: {csv_filename} ...")
+#         try:
+#             df_to_insert.to_csv(
+#                 csv_filename, index=False, encoding="utf-8-sig", float_format="%.2f"
+#             )
+#             print(f"  ✔ CSV 文件保存成功: {csv_filename}")
+#         except Exception as csv_error:
+#             print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
+
+#         # 写入CSV之后，将数值转换为格式化的字符串
+#         df_to_insert["feature_value"] = df_to_insert["feature_value"].map("{:.2f}".format)
+#         # 处理可能因coerce产生的NaN值，将其转换为空字符串
+#         df_to_insert["feature_value"] = df_to_insert["feature_value"].replace("nan", "")
+
+#         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
+#         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
+
+#     except Exception as e:
+#         print(f"❌ 存入 ClickHouse 时发生错误: {e}")
+
+def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
+    """
+    (辅助函数) 检查并创建表。
+    """
+
+    client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+    create_table_query = f"""
+    CREATE TABLE IF NOT EXISTS {db_name}.`{table_name}`
+    (
+        `stat_id`            BIGINT,
+        `temple_id`          FixedString(20),
+        `device_id`          FixedString(30),
+        `stats_start_time`   DateTime,
+        `monitored_variable` FixedString(20),
+        `stats_cycle`        FixedString(10),
+        `feature_key`        FixedString(30),
+        `feature_value`      FixedString(30),  
+        `standby_field01`    FixedString(30),
+        `created_at`         DateTime          
+    ) ENGINE = MergeTree()
+    ORDER BY (stats_start_time, device_id, feature_key)
+    """
+    client.execute(create_table_query)
+    print(f"表 {db_name}.`{table_name}` 检查/创建完毕 (已更新至 BIGINT schema)。")
+
+
+def store_dataframe_to_clickhouse(
     df: pd.DataFrame,
     table_name: str,
-    field_name: str,
-    device_id: str,
-    temple_id: str,
-    stats_cycle: str,
+    target: str = "shared",
+    chunk_size: int = 500000,
 ):
     """
-    接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
+    将 DataFrame 存储到 ClickHouse (使用 clickhouse-driver TCP 协议)。
     """
     if df.empty:
-        print("\n特征数据为空，跳过存储。")
+        print("\n数据为空，跳过存储。")
         return
 
-    print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
+    if target == "shared":
+        host = config.CLICKHOUSE_SHARED_HOST
+        port = config.CLICKHOUSE_SHARED_PORT
+        user = config.CLICKHOUSE_SHARED_USER
+        password = config.CLICKHOUSE_SHARED_PASSWORD
+        database = config.CLICKHOUSE_SHARED_DB
+    else:
+        raise ValueError(f"未知的 ClickHouse 目标: {target}")
+
+    full_table_name = f"{database}.{table_name}"
+    print(f"准备连接到 {host}:{port}，存入 {full_table_name}...")
+
+    df_to_insert = df.copy()
+    df_to_insert.reset_index(inplace=True)
+    if config.FIELD_NAME not in df_to_insert.columns:
+        raise KeyError(f"DataFrame 中找不到值列: '{config.FIELD_NAME}'")
+    if "_time" not in df_to_insert.columns:
+        raise KeyError("DataFrame 中找不到时间列: '_time' (请检查 reset_index)")
+
+    df_to_insert.rename(
+        columns={"_time": "stats_start_time", config.FIELD_NAME: "monitored_variable"},
+        inplace=True,
+    )
+    # 填充列
+    df_to_insert["stat_id"] = ""
+    df_to_insert["temple_id"] = config.TEMPLE_ID
+    df_to_insert["device_id"] = config.DEVICE_ID
+    df_to_insert["stats_cycle"] = config.STATS_CYCLE
+    df_to_insert["feature_key"] = ""
+    df_to_insert["feature_value"] = ""
+    df_to_insert["standby_field01"] = ""
+    df_to_insert["created_at"] = ""
+
+    final_columns = [
+        "stat_id",
+        "temple_id",
+        "device_id",
+        "stats_start_time",
+        "monitored_variable",
+        "stats_cycle",
+        "feature_key",
+        "feature_value",
+        "standby_field01",
+        "created_at",
+    ]
+
+    # 检查是否有缺失的列
+    missing_cols = set(final_columns) - set(df_to_insert.columns)
+    if missing_cols:
+        print(f"警告: DataFrame 中缺少以下列: {missing_cols}")
+        # 补全缺失的列为空值，防止插入失败
+        for col in missing_cols:
+            df_to_insert[col] = ""  # 假设 CHAR 类型可以接受空字符串
+
+    df_to_insert = df_to_insert[final_columns]
 
     try:
-        df_long = df.reset_index()
-        feature_columns = [col for col in df.columns if col not in ["分析周期"]]
-        df_long = pd.melt(
-            df_long,
-            id_vars=["_time"],
-            value_vars=feature_columns,
-            var_name="feature_key",
-            value_name="feature_value",
-        )
+        client = Client(host=host, port=port, user=user, password=password, database="default")
+        print("连接成功。")
+        _create_table_if_not_exists(client, database, table_name)
+        # 准备 INSERT 语句
+        insert_query = f"INSERT INTO {full_table_name} VALUES"
+        # 转换数据 (使用 .values.tolist() 兼容性好)
+        data_to_insert = df_to_insert.values.tolist()
+        total_rows = len(data_to_insert)
+        chunk_size = int(chunk_size)
+        for i in range(0, total_rows, chunk_size):
+            chunk = data_to_insert[i : i + chunk_size]
+            client.execute(insert_query, chunk)
+            print(f"  ...已插入 {min(i + chunk_size, total_rows)} / {total_rows} 行")
 
-        df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
-        df_long["temple_id"] = temple_id
-        df_long["device_id"] = device_id
-        df_long["monitored_variable"] = field_name
-        df_long["stats_cycle"] = stats_cycle
-        df_long["created_at"] = datetime.datetime.now()
-        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
-
-        final_columns = [
-            "stat_id",
-            "temple_id",
-            "device_id",
-            "stats_start_time",
-            "monitored_variable",
-            "stats_cycle",
-            "feature_key",
-            "feature_value",
-            "created_at",
-        ]
-        df_to_insert = df_long[final_columns]
-        df_to_insert["feature_value"] = pd.to_numeric(
-            df_to_insert["feature_value"], errors="coerce"
-        )
-        df_to_insert["standby_field01"] = ""
-
-        client = clickhouse_connect.get_client(
-            host=config.CLICKHOUSE_HOST,
-            port=config.CLICKHOUSE_PORT,
-            username=config.CLICKHOUSE_USER,
-            password=config.CLICKHOUSE_PASSWORD,
-        )
-        client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
-        create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
-        (
-            `stat_id` UUID,
-            `temple_id` CHAR(20),
-            `device_id` CHAR(30),
-            `stats_start_time` DATETIME,
-            `monitored_variable` CHAR(20),
-            `stats_cycle` CHAR(10),
-            `feature_key` CHAR(30),
-            `feature_value` VARCHAR(30),
-            `standby_field01` CHAR(30),
-            `created_at` TIMESTAMP
-        ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
-        """
-        client.command(create_table_query)
-
-        # 在存入 ClickHouse 前，先将数据保存到 CSV 文件
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_filename = f"{table_name}_{timestamp}.csv"
-        print(f"  ► 正在将数据保存到 CSV 文件: {csv_filename} ...")
-        try:
-            df_to_insert.to_csv(
-                csv_filename, index=False, encoding="utf-8-sig", float_format="%.2f"
-            )
-            print(f"  ✔ CSV 文件保存成功: {csv_filename}")
-        except Exception as csv_error:
-            print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
-
-        # 写入CSV之后，将数值转换为格式化的字符串
-        df_to_insert["feature_value"] = df_to_insert["feature_value"].map("{:.2f}".format)
-        # 处理可能因coerce产生的NaN值，将其转换为空字符串
-        df_to_insert['feature_value'] = df_to_insert['feature_value'].replace('nan', '')
-
-        print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
-        client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
+        print(f"成功插入 {total_rows} 行数据到 {full_table_name}。")
 
     except Exception as e:
-        print(f"❌ 存入 ClickHouse 时发生错误: {e}")
-
-
-def store_features_to_center_clickhouse(
-    df: pd.DataFrame,
-    client: clickhouse_connect.driver.Client,
-    table_name: str,
-    field_name: str,
-    device_id: str,
-    temple_id: str,
-    stats_cycle: str,
-):
-    """
-    接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
-    """
-    if df.empty:
-        print("\n特征数据为空，跳过存储。")
-        return
-
-    print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
-
-    try:
-        df_long = df.reset_index()
-        feature_columns = [col for col in df.columns if col not in ["分析周期"]]
-        df_long = pd.melt(
-            df_long,
-            id_vars=["_time"],
-            value_vars=feature_columns,
-            var_name="feature_key",
-            value_name="feature_value",
-        )
-
-        df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
-        df_long["temple_id"] = temple_id
-        df_long["device_id"] = device_id
-        df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
-        df_long["monitored_variable"] = field_name
-        df_long["stats_cycle"] = stats_cycle
-        df_long["created_at"] = datetime.datetime.now()
-
-        final_columns = [
-            "stat_id",
-            "temple_id",
-            "device_id",
-            "stats_start_time",
-            "monitored_variable",
-            "stats_cycle",
-            "feature_key",
-            "feature_value",
-            "created_at",
-        ]
-        df_to_insert = df_long[final_columns]
-        df_to_insert["feature_value"] = df_to_insert["feature_value"].astype(str)
-        df_to_insert["standby_field01"] = ""
-
-        client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
-        create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
-        (
-            `stat_id` UUID,
-            `temple_id` CHAR(20),
-            `device_id` CHAR(30),
-            `stats_start_time` DATETIME,
-            `monitored_variable` CHAR(20),
-            `stats_cycle` CHAR(10),
-            `feature_key` CHAR(30),
-            `feature_value` VARCHAR(30),
-            `standby_field01` CHAR(30),
-            `created_at` TIMESTAMP
-        ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
-        """
-        client.command(create_table_query)
-
-        # 存入 ClickHouse 前，先将数据保存到 CSV 文件
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        csv_filename = f"{table_name}_{device_id}_{timestamp}.csv"
-
-        try:
-            df_for_csv = df_to_insert.copy()
-            df_for_csv["feature_value"] = pd.to_numeric(
-                df_for_csv["feature_value"], errors="coerce"
-            )
-            df_for_csv.dropna(subset=["feature_value"], inplace=True)
-            df_for_csv["feature_value"] = df_for_csv["feature_value"].map("{:.2f}".format)
-
-            df_for_csv.to_csv(csv_filename, index=False, encoding="utf-8-sig")
-            print(f"  ✔ CSV 文件保存成功: {csv_filename}")
-        except Exception as csv_error:
-            print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
-
-        print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
-        client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
-
-    except Exception as e:
-        print(f"❌ 存入 ClickHouse 时发生错误: {e}")
-
-
-def get_latest_timestamp_from_clickhouse() -> pd.Timestamp:
-    """查询 ClickHouse，获取已有特征数据的最新时间戳。"""
-    try:
-        client = clickhouse_connect.get_client(
-            host=config.CLICKHOUSE_HOST,
-            port=config.CLICKHOUSE_PORT,
-            username=config.CLICKHOUSE_USER,
-            password=config.CLICKHOUSE_PASSWORD,
-        )
-        tables = client.query_df(f"SHOW TABLES FROM {config.DATABASE_NAME}")
-        if config.TABLE_NAME not in tables["name"].values:
-            return None
-
-        query = f"SELECT max(`时间段`) FROM {config.DATABASE_NAME}.{config.TABLE_NAME}"
-        result = client.query(query)
-        latest_time = result.first_row[0] if result.first_row else None
-
-        if latest_time:
-            return pd.to_datetime(latest_time).tz_localize("UTC")
-        return None
-    except Exception as e:
-        print(f"查询 ClickHouse 最新时间戳时出错: {e}")
-        return None
+        print(f"存储到 ClickHouse 失败: {e}")
+        raise e
 
 
 ## 预处理
-
-
-def impute_missing_values(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    对重采样后的数据进行插值和填充。
-    规则: ffill -> bfill -> dropna(all) -> fillna(0)
-
-    Args:
-        df (pd.DataFrame): 带有时间索引的DataFrame。
-
-    Returns:
-        pd.DataFrame: 填充缺失值后的DataFrame。
-    """
-    # 规则 1: 使用 ffill() / bfill() 补齐分钟级缺失
-    df_filled = df.ffill().bfill()
-    # 规则 2: 删除完全为空的行
-    df_dropped = df_filled.dropna(how="all")
-    # 规则 3: 对初始无法计算的值补零
-    df_final = df_dropped.fillna(0)
-    return df_final
-
-
-def convert_timezone_and_add_column(df: pd.DataFrame, tz: str = "Asia/Shanghai") -> pd.DataFrame:
-    """
-    将DataFrame的时间索引从UTC转换为指定时区，并添加一个格式化的时间字符串列。
-
-    Args:
-        df (pd.DataFrame): 带有UTC时间索引的DataFrame。
-        tz (str, optional): 目标时区. 默认为 'Asia/Shanghai'.
-
-    Returns:
-        pd.DataFrame: 转换时区并添加了新时间列的DataFrame。
-    """
-    if df.index.tz is None:
-        # 如果索引是naive的，先本地化为UTC
-        df = df.tz_localize("UTC")
-
-    df_converted = df.tz_convert(tz)
-    df_converted["stats_start_time"] = df_converted.index.strftime("%Y-%m-%d %H:%M:%S")
-    return df_converted
-
-
 def preprocess_timeseries_data(
     df: pd.DataFrame,
     resample_freq: str,
@@ -383,7 +392,8 @@ def preprocess_timeseries_data(
     对原始时间序列数据进行标准化预处理：
     1. 确保时间索引是UTC时区。
     2. 按照指定频率和起止时间，创建完整的、连续的时间轴。
-    3. 使用 ffill 和 bfill 填充缺失值。
+    3. 优先使用线性插值 (interpolate) 填充内部缺失值，
+       然后使用 ffill 和 bfill 填充边缘（开头和结尾）的缺失值。
     4. 将最终的时间索引转换为本地时区（东八区）。
     """
     if df.empty:
@@ -398,18 +408,73 @@ def preprocess_timeseries_data(
     start_utc = start_time.astimezone(datetime.timezone.utc)
     end_utc = end_time.astimezone(datetime.timezone.utc)
 
-    # 1. 创建一个完整的目标时间范围
     full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
-
-    # 2. 对 DataFrame 进行 reindex，使其包含所有期望的时间点
     reindexed_df = df.reindex(full_range)
 
-    # 3. 使用 ffill 和 bfill 填充所有缺失值
-    filled_df = reindexed_df.ffill().bfill()
+    #    使用线性插值填充所有 "内部" 的 NaNs
+    interpolated_df = reindexed_df.interpolate(method="linear")
 
-    # 4. 转换回本地时区
+    #    使用 ffill 和 bfill 填充可能残留在
+    filled_df = interpolated_df.ffill().bfill()
+
     final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
     final_df.index.name = "_time"
 
-    print(f"  ► 处理完成。处理后的数据共有 {len(final_df)} 条记录。")
+    print(f"  ► 处理完成。处理后的数据共有 {len(final_df)} 条记录。")
+    return final_df
+
+
+def preprocess_limited_interpolation(
+    df: pd.DataFrame,
+    resample_freq: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    gap_threshold_hours: float = 2.0,
+) -> pd.DataFrame:
+    """
+    对时间序列数据进行预处理，并仅对短于门限的空缺进行线性插值。
+
+    1. 确保时间索引是UTC时区。
+    2. 按照指定频率和起止时间，创建完整的、连续的时间轴。
+    3. 仅对 (gap_threshold_hours) 或更短的连续缺失值执行线性插值。
+    4. 较长的缺失值将保留为 NaNs。
+    """
+    if df.empty:
+        return df
+
+    if df.index.tz is None:
+        df = df.tz_localize("UTC")
+    else:
+        df = df.tz_convert("UTC")
+
+    start_utc = start_time.astimezone(datetime.timezone.utc)
+    end_utc = end_time.astimezone(datetime.timezone.utc)
+
+    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
+    reindexed_df = df.reindex(full_range)
+
+    try:
+        threshold_duration = pd.Timedelta(hours=gap_threshold_hours)
+        resample_duration = pd.Timedelta(resample_freq)
+    except ValueError:
+        raise ValueError(
+            f"无效的 resample_freq: '{resample_freq}'。请使用 '1T', '5min', '1H' 等。"
+        )
+
+    if resample_duration.total_seconds() <= 0:
+        raise ValueError(f"resample_freq '{resample_freq}' 必须是正的时间间隔。")
+
+    limit_count = int(threshold_duration / resample_duration) - 1
+
+    if limit_count < 1:
+        print(
+            f"警告: resample_freq ({resample_freq}) 大于或等于门限 ({gap_threshold_hours}h)。将不进行插值。"
+        )
+        limit_count = 0
+
+    interpolated_df = reindexed_df.interpolate(method="linear", limit=limit_count)
+    final_df = interpolated_df.tz_convert(config.LOCAL_TIMEZONE)
+    final_df.index.name = "_time"
+
+    print(f"  ► 预处理(有限插值)完成。处理后的数据共有 {len(final_df)} 条记录。")
     return final_df

@@ -44,7 +44,8 @@ cd ts_fe
 ```bash
 python -m venv .venv
 # Windows
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
+.\.venv-py312\Scripts\Activate.ps1
 # macOS / Linux
 source .venv/bin/activate
 ```
