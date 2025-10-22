@@ -164,22 +164,26 @@ def get_timeseries_data(
 ## clickhouse
 
 
-def get_clickhouse_client():
+def get_clickhouse_client(database_name):
+    """
+    尝试连接到指定的 ClickHouse 数据库。
+    """
     try:
         client = Client(
             host=config.CLICKHOUSE_SHARED_HOST,
             port=config.CLICKHOUSE_SHARED_PORT,
             user=config.CLICKHOUSE_SHARED_USER,
             password=config.CLICKHOUSE_SHARED_PASSWORD,
-            database=config.CLICKHOUSE_SHARED_DB,
+            database=database_name,  # <-- 使用参数
         )
         print(
-            f"成功连接到 ClickHouse {config.CLICKHOUSE_SHARED_HOST}:{config.CLICKHOUSE_SHARED_PORT}"
+            f"成功连接到 ClickHouse {config.CLICKHOUSE_SHARED_HOST}:{config.CLICKHOUSE_SHARED_PORT} (数据库: {database_name})"
         )
         return client
     except Exception as e:
-        print(f"连接 ClickHouse 失败: {e}")
-        raise
+        # 打印错误，但让调用者（主脚本）来处理异常
+        print(f"连接 ClickHouse 数据库 '{database_name}' 失败: {e}")
+        raise  # 重新抛出异常
 
 
 # def store_features_to_clickhouse(

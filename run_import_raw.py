@@ -18,7 +18,8 @@ DATA_DIRECTORY = r"C:\Users\23947\Desktop\todo\45窟"
 
 def main():
     try:
-        client = get_clickhouse_client()
+        DB = config.CLICKHOUSE_SHARED_DB
+        client = get_clickhouse_client(DB)
     except Exception:
         print("无法连接到 ClickHouse，脚本终止。")
         return
