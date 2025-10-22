@@ -3,6 +3,7 @@
 import csv
 import datetime
 import os
+import re
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -163,7 +164,24 @@ def get_timeseries_data(
 ## clickhouse
 
 
-@timing_decorator
+def get_clickhouse_client():
+    try:
+        client = Client(
+            host=config.CLICKHOUSE_SHARED_HOST,
+            port=config.CLICKHOUSE_SHARED_PORT,
+            user=config.CLICKHOUSE_SHARED_USER,
+            password=config.CLICKHOUSE_SHARED_PASSWORD,
+            database=config.CLICKHOUSE_SHARED_DB,
+        )
+        print(
+            f"成功连接到 ClickHouse {config.CLICKHOUSE_SHARED_HOST}:{config.CLICKHOUSE_SHARED_PORT}"
+        )
+        return client
+    except Exception as e:
+        print(f"连接 ClickHouse 失败: {e}")
+        raise
+
+
 # def store_features_to_clickhouse(
 #     df: pd.DataFrame,
 #     table_name: str,
@@ -264,9 +282,178 @@ def get_timeseries_data(
 #     except Exception as e:
 #         print(f"❌ 存入 ClickHouse 时发生错误: {e}")
 
+
+def _create_raw_tables_if_not_exists(client):
+    """
+    创建原始传感器数据表（如果不存在）。
+    """
+    db_name = config.CLICKHOUSE_SHARED_DB
+
+    # 1. 温湿度表 (从 config 获取表名)
+    table_temp = config.RAW_SENSOR_MAPPING_CONFIG["无线温湿度传感器"]["clickhouse_table"]
+    create_temp_query = f"""
+    CREATE TABLE IF NOT EXISTS {db_name}.{table_temp} (
+        temple_id     CHAR(20),
+        device_id     CHAR(30),
+        time          DATETIME,
+        humidity      FLOAT(32),
+        temperature   FLOAT(32),
+        created_at    TIMESTAMP
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMM(time)
+    ORDER BY (temple_id, device_id, time)
+    """
+
+    # 2. CO2 表 (从 config 获取表名)
+    table_co2 = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"]["clickhouse_table"]
+    create_co2_query = f"""
+    CREATE TABLE IF NOT EXISTS {db_name}.{table_co2} (
+        temple_id     CHAR(20),
+        device_id     CHAR(30),
+        time          DATETIME,
+        co2_collected FLOAT(32),
+        co2_corrected FLOAT(32),
+        created_at    TIMESTAMP
+    ) ENGINE = MergeTree()
+    PARTITION BY toYYYYMM(time)
+    ORDER BY (temple_id, device_id, time)
+    """
+
+    try:
+        client.execute(create_temp_query)
+        print(f"表 {db_name}.{table_temp} 检查/创建 成功。")
+        client.execute(create_co2_query)
+        print(f"表 {db_name}.{table_co2} 检查/创建 成功。")
+    except Exception as e:
+        print(f"创建表失败: {e}")
+        raise
+
+
+def process_excel_file(file_path, client, rules_config, parse_config):
+    """
+    处理单个 Excel 文件：解析、读取所有年份 Sheet、并插入数据库。
+    """
+    filename = os.path.basename(file_path)
+
+    # 解析文件名 (使用 config 中的 RAW_FILENAME_REGEX)
+    match = re.match(parse_config["filename_regex"], filename)
+    if not match:
+        print(f"  文件名 {filename} 不符合规则，跳过。")
+        return
+
+    # 提取信息
+    device_id = match.group(1)  # 按您要求，保持原始大小写
+    temple_id = match.group(2)
+    keyword = match.group(3)
+
+    # 获取映射规则 (使用 config 中的 RAW_SENSOR_MAPPING_CONFIG)
+    if keyword not in rules_config:
+        print(f"  未找到关键字 '{keyword}' 的映射规则，跳过。")
+        return
+
+    rules = rules_config[keyword]
+    target_table = rules["clickhouse_table"]
+    column_map = rules["column_mapping"]
+
+    print(f"  解析成功: [Device: {device_id}, Temple: {temple_id}] -> 存入表: {target_table}")
+
+    # 读取 Excel (处理多年份 Sheet)
+    try:
+        xls = pd.ExcelFile(file_path)
+    except Exception as e:
+        print(f"  读取 Excel 文件失败 (可能文件已打开或损坏): {e}")
+        return
+
+    all_sheets_data = []
+    excel_options = parse_config["excel_reading"]
+    header_row = excel_options["header_row"]
+    start_year, end_year = excel_options["sheet_year_range"]
+
+    # 筛选出在年份范围内的所有 Sheet
+    valid_sheet_names = [
+        s for s in xls.sheet_names if s.isdigit() and start_year <= int(s) <= end_year
+    ]
+
+    if not valid_sheet_names:
+        print("  未找到任何有效的年份，跳过。")
+        return
+
+    for sheet_name in valid_sheet_names:
+        try:
+            df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=header_row)
+            all_sheets_data.append(df_sheet)
+        except Exception as e:
+            print(f"    读取 Sheet '{sheet_name}' 失败: {e}")
+
+    if not all_sheets_data:
+        print("  所有 Sheet 读取失败，未获取任何数据。")
+        return
+
+    # 合并、处理数据
+    df_total = pd.concat(all_sheets_data, ignore_index=True)
+    df_total.rename(columns=column_map, inplace=True)
+    final_db_columns = list(column_map.values())
+    df_to_insert = df_total[final_db_columns].copy()
+
+    df_to_insert["device_id"] = device_id
+    df_to_insert["temple_id"] = temple_id
+    df_to_insert["created_at"] = datetime.datetime.now()
+
+    df_to_insert["time"] = pd.to_datetime(df_to_insert["time"], errors="coerce")
+    df_to_insert.dropna(subset=["time"], inplace=True)
+
+    # 将数值列转为
+    for col in final_db_columns:
+        if col != "time":
+            df_to_insert[col] = pd.to_numeric(df_to_insert[col], errors="coerce")
+
+    # 删除任何包含空值(NaN)的行，因为 ClickHouse FLOAT 不接受 NaN
+    df_to_insert.dropna(inplace=True)
+    if df_to_insert.empty:
+        print("  处理后数据为空 (可能所有行都有无效的时间或值)，跳过。")
+        return
+
+    try:
+        full_table_name = f"{config.CLICKHOUSE_SHARED_DB}.{target_table}"
+        # 转换数据为列表 (clickhouse-driver 推荐方式)
+        # 必须确保 DataFrame 的列顺序与 ClickHouse 表一致
+        co2_table_name = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"]["clickhouse_table"]
+        if target_table == co2_table_name:
+            final_columns_order = [
+                "temple_id",
+                "device_id",
+                "time",
+                "co2_collected",
+                "co2_corrected",
+                "created_at",
+            ]
+        else:  # RAW_TABLE_TEMP_HUMIDITY
+            final_columns_order = [
+                "temple_id",
+                "device_id",
+                "time",
+                "humidity",
+                "temperature",
+                "created_at",
+            ]
+
+        df_to_insert = df_to_insert[final_columns_order]
+        data_to_insert = df_to_insert.values.tolist()
+
+        insert_query = f"INSERT INTO {full_table_name} VALUES"
+
+        # client.execute 会自动处理批量插入
+        client.execute(insert_query, data_to_insert)
+
+        print(f"  成功! 插入 {len(data_to_insert)} 行数据到 {full_table_name}。")
+
+    except Exception as e:
+        print(f"  插入数据到 ClickHouse 失败: {e}")
+
+
 def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
     """
-    (辅助函数) 检查并创建表。
+    创建特征数据表（如果不存在）。
     """
 
     client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
@@ -287,7 +474,7 @@ def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
     ORDER BY (stats_start_time, device_id, feature_key)
     """
     client.execute(create_table_query)
-    print(f"表 {db_name}.`{table_name}` 检查/创建完毕 (已更新至 BIGINT schema)。")
+    print(f"表 {db_name}.`{table_name}` 检查/创建完毕 。")
 
 
 def store_dataframe_to_clickhouse(
@@ -323,18 +510,15 @@ def store_dataframe_to_clickhouse(
         raise KeyError("DataFrame 中找不到时间列: '_time' (请检查 reset_index)")
 
     df_to_insert.rename(
-        columns={"_time": "stats_start_time", config.FIELD_NAME: "monitored_variable"},
+        columns={"_time": "stats_start_time", config.FIELD_NAME: "feature_value"},
         inplace=True,
     )
     # 填充列
-    df_to_insert["stat_id"] = ""
+    start_int_id = int(datetime.datetime.now().timestamp() * 1_000_000)
+    df_to_insert["stat_id"] = range(start_int_id, start_int_id + len(df_to_insert))
     df_to_insert["temple_id"] = config.TEMPLE_ID
     df_to_insert["device_id"] = config.DEVICE_ID
-    df_to_insert["stats_cycle"] = config.STATS_CYCLE
-    df_to_insert["feature_key"] = ""
-    df_to_insert["feature_value"] = ""
-    df_to_insert["standby_field01"] = ""
-    df_to_insert["created_at"] = ""
+    df_to_insert["created_at"] = datetime.datetime.now()
 
     final_columns = [
         "stat_id",
@@ -372,7 +556,6 @@ def store_dataframe_to_clickhouse(
         for i in range(0, total_rows, chunk_size):
             chunk = data_to_insert[i : i + chunk_size]
             client.execute(insert_query, chunk)
-            print(f"  ...已插入 {min(i + chunk_size, total_rows)} / {total_rows} 行")
 
         print(f"成功插入 {total_rows} 行数据到 {full_table_name}。")
 
