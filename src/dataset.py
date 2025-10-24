@@ -289,7 +289,7 @@ def get_clickhouse_client(database_name):
 
 def _create_raw_tables_if_not_exists(client):
     """
-    创建原始传感器数据表（如果不存在）。
+    创建原始数据表（如果不存在）。
     """
     db_name = config.CLICKHOUSE_SHARED_DB
 
@@ -333,6 +333,7 @@ def _create_raw_tables_if_not_exists(client):
         raise
 
 
+# 批量处理温湿度和CO2传感器的Excel文件
 def process_excel_file(file_path, client, rules_config, parse_config):
     """
     处理单个 Excel 文件：解析、读取所有年份 Sheet、并插入数据库。
@@ -455,117 +456,191 @@ def process_excel_file(file_path, client, rules_config, parse_config):
         print(f"  插入数据到 ClickHouse 失败: {e}")
 
 
-def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
+# def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
+#     """
+#     创建特征数据表（如果不存在）。
+#     """
+
+#     client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+#     create_table_query = f"""
+#     CREATE TABLE IF NOT EXISTS {db_name}.`{table_name}`
+#     (
+#         `stat_id`            BIGINT,
+#         `temple_id`          FixedString(20),
+#         `device_id`          FixedString(30),
+#         `stats_start_time`   DateTime,
+#         `monitored_variable` FixedString(20),
+#         `stats_cycle`        FixedString(10),
+#         `feature_key`        FixedString(30),
+#         `feature_value`      FixedString(30),
+#         `standby_field01`    FixedString(30),
+#         `created_at`         DateTime
+#     ) ENGINE = MergeTree()
+#     ORDER BY (stats_start_time, device_id, feature_key)
+#     """
+#     client.execute(create_table_query)
+#     print(f"表 {db_name}.`{table_name}` 检查/创建完毕 。")
+
+
+def create_table_if_not_exists(client, db_name, table_name, schema_template):
     """
-    创建特征数据表（如果不存在）。
+    - client: 数据库连接
+    - db_name: 数据库名 (例如 'original_data')
+    - table_name: 要创建的表名
+    - schema_template: 包含 {db_name} 和 {table_name} 占位符的 SQL 字符串
+                      (这个模板将从 src.table_definitions 传入)
     """
-
-    client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-    create_table_query = f"""
-    CREATE TABLE IF NOT EXISTS {db_name}.`{table_name}`
-    (
-        `stat_id`            BIGINT,
-        `temple_id`          FixedString(20),
-        `device_id`          FixedString(30),
-        `stats_start_time`   DateTime,
-        `monitored_variable` FixedString(20),
-        `stats_cycle`        FixedString(10),
-        `feature_key`        FixedString(30),
-        `feature_value`      FixedString(30),  
-        `standby_field01`    FixedString(30),
-        `created_at`         DateTime          
-    ) ENGINE = MergeTree()
-    ORDER BY (stats_start_time, device_id, feature_key)
-    """
-    client.execute(create_table_query)
-    print(f"表 {db_name}.`{table_name}` 检查/创建完毕 。")
-
-
-def store_dataframe_to_clickhouse(
-    df: pd.DataFrame,
-    table_name: str,
-    target: str = "shared",
-    chunk_size: int = 500000,
-):
-    """
-    将 DataFrame 存储到 ClickHouse (使用 clickhouse-driver TCP 协议)。
-    """
-    if df.empty:
-        print("\n数据为空，跳过存储。")
-        return
-
-    if target == "shared":
-        host = config.CLICKHOUSE_SHARED_HOST
-        port = config.CLICKHOUSE_SHARED_PORT
-        user = config.CLICKHOUSE_SHARED_USER
-        password = config.CLICKHOUSE_SHARED_PASSWORD
-        database = config.CLICKHOUSE_SHARED_DB
-    else:
-        raise ValueError(f"未知的 ClickHouse 目标: {target}")
-
-    full_table_name = f"{database}.{table_name}"
-    print(f"准备连接到 {host}:{port}，存入 {full_table_name}...")
-
-    df_to_insert = df.copy()
-    df_to_insert.reset_index(inplace=True)
-    if config.FIELD_NAME not in df_to_insert.columns:
-        raise KeyError(f"DataFrame 中找不到值列: '{config.FIELD_NAME}'")
-    if "_time" not in df_to_insert.columns:
-        raise KeyError("DataFrame 中找不到时间列: '_time' (请检查 reset_index)")
-
-    df_to_insert.rename(
-        columns={"_time": "stats_start_time", config.FIELD_NAME: "feature_value"},
-        inplace=True,
-    )
-    # 填充列
-    start_int_id = int(datetime.datetime.now().timestamp() * 1_000_000)
-    df_to_insert["stat_id"] = range(start_int_id, start_int_id + len(df_to_insert))
-    df_to_insert["temple_id"] = config.TEMPLE_ID
-    df_to_insert["device_id"] = config.DEVICE_ID
-    df_to_insert["created_at"] = datetime.datetime.now()
-
-    final_columns = [
-        "stat_id",
-        "temple_id",
-        "device_id",
-        "stats_start_time",
-        "monitored_variable",
-        "stats_cycle",
-        "feature_key",
-        "feature_value",
-        "standby_field01",
-        "created_at",
-    ]
-
-    # 检查是否有缺失的列
-    missing_cols = set(final_columns) - set(df_to_insert.columns)
-    if missing_cols:
-        print(f"警告: DataFrame 中缺少以下列: {missing_cols}")
-        # 补全缺失的列为空值，防止插入失败
-        for col in missing_cols:
-            df_to_insert[col] = ""  # 假设 CHAR 类型可以接受空字符串
-
-    df_to_insert = df_to_insert[final_columns]
-
     try:
-        client = Client(host=host, port=port, user=user, password=password, database="default")
-        print("连接成功。")
-        _create_table_if_not_exists(client, database, table_name)
-        # 准备 INSERT 语句
-        insert_query = f"INSERT INTO {full_table_name} VALUES"
-        # 转换数据 (使用 .values.tolist() 兼容性好)
-        data_to_insert = df_to_insert.values.tolist()
-        total_rows = len(data_to_insert)
-        chunk_size = int(chunk_size)
-        for i in range(0, total_rows, chunk_size):
-            chunk = data_to_insert[i : i + chunk_size]
-            client.execute(insert_query, chunk)
-
-        print(f"成功插入 {total_rows} 行数据到 {full_table_name}。")
+        # 1. 确保数据库存在
+        client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+        # 2. 格式化 SQL 模板
+        #    使用 .format() 方法动态替换占位符
+        create_table_query = schema_template.format(db_name=db_name, table_name=table_name)
+        # 3. 执行建表
+        client.execute(create_table_query)
+        print(f"表 {db_name}.`{table_name}` 检查/创建 成功。")
+        return True
 
     except Exception as e:
-        print(f"存储到 ClickHouse 失败: {e}")
-        raise e
+        print(f"错误: 创建表 {db_name}.`{table_name}` 失败: {e}")
+        # 打印出失败的SQL语句，方便调试
+        print("失败的SQL查询:\n", create_table_query)
+        return False
+
+
+# 通用的 Excel 转 pd
+def read_excel_data(file_path, sheet_name=0, header_row=0, dtypes=None):
+    """
+    通用的 Excel 读取函数。
+    - file_path: 文件路径
+    - sheet_name: 表单名 (默认为第一个)
+    - header_row: 标题行 (0 是第一行)
+    """
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, dtype=dtypes)
+        # 删除所有列都为空的行
+        df_cleaned = df.dropna(how="all")
+        return df_cleaned
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {file_path}")
+    except Exception as e:
+        print(f"错误: 读取 Excel 文件 {file_path} 失败: {e}")
+
+    return pd.DataFrame()
+
+
+def load_to_clickhouse(client, df, table_name):
+    """
+    通用的 ClickHouse 加载函数。
+    它会根据 DataFrame 的列名自动插入数据。
+    """
+    if df.empty:
+        print(f"数据为空，跳过插入表 '{table_name}'")
+        return False
+
+    data_to_insert = df.to_dict("records")
+
+    # 构造插入语句
+    column_names = ", ".join([f"`{col}`" for col in df.columns])  # 使用反引号 ` ` 保证字段名正确
+    query = f"INSERT INTO {table_name} ({column_names}) VALUES"
+
+    try:
+        client.execute(query, data_to_insert)
+        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
+        return True
+    except Exception as e:
+        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
+        if data_to_insert:
+            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
+        return False
+
+
+# def store_dataframe_to_clickhouse(
+#     df: pd.DataFrame,
+#     table_name: str,
+#     target: str = "shared",
+#     chunk_size: int = 500000,
+# ):
+#     """
+#     将 DataFrame 存储到 ClickHouse (使用 clickhouse-driver TCP 协议)。
+#     用到注释后的函数，需要修改
+#     """
+#     if df.empty:
+#         print("\n数据为空，跳过存储。")
+#         return
+
+#     if target == "shared":
+#         host = config.CLICKHOUSE_SHARED_HOST
+#         port = config.CLICKHOUSE_SHARED_PORT
+#         user = config.CLICKHOUSE_SHARED_USER
+#         password = config.CLICKHOUSE_SHARED_PASSWORD
+#         database = config.CLICKHOUSE_SHARED_DB
+#     else:
+#         raise ValueError(f"未知的 ClickHouse 目标: {target}")
+
+#     full_table_name = f"{database}.{table_name}"
+#     print(f"准备连接到 {host}:{port}，存入 {full_table_name}...")
+
+#     df_to_insert = df.copy()
+#     df_to_insert.reset_index(inplace=True)
+#     if config.FIELD_NAME not in df_to_insert.columns:
+#         raise KeyError(f"DataFrame 中找不到值列: '{config.FIELD_NAME}'")
+#     if "_time" not in df_to_insert.columns:
+#         raise KeyError("DataFrame 中找不到时间列: '_time' (请检查 reset_index)")
+
+#     df_to_insert.rename(
+#         columns={"_time": "stats_start_time", config.FIELD_NAME: "feature_value"},
+#         inplace=True,
+#     )
+#     # 填充列
+#     start_int_id = int(datetime.datetime.now().timestamp() * 1_000_000)
+#     df_to_insert["stat_id"] = range(start_int_id, start_int_id + len(df_to_insert))
+#     df_to_insert["temple_id"] = config.TEMPLE_ID
+#     df_to_insert["device_id"] = config.DEVICE_ID
+#     df_to_insert["created_at"] = datetime.datetime.now()
+
+#     final_columns = [
+#         "stat_id",
+#         "temple_id",
+#         "device_id",
+#         "stats_start_time",
+#         "monitored_variable",
+#         "stats_cycle",
+#         "feature_key",
+#         "feature_value",
+#         "standby_field01",
+#         "created_at",
+#     ]
+
+#     # 检查是否有缺失的列
+#     missing_cols = set(final_columns) - set(df_to_insert.columns)
+#     if missing_cols:
+#         print(f"警告: DataFrame 中缺少以下列: {missing_cols}")
+#         # 补全缺失的列为空值，防止插入失败
+#         for col in missing_cols:
+#             df_to_insert[col] = ""  # 假设 CHAR 类型可以接受空字符串
+
+#     df_to_insert = df_to_insert[final_columns]
+
+#     try:
+#         client = Client(host=host, port=port, user=user, password=password, database="default")
+#         print("连接成功。")
+#         _create_table_if_not_exists(client, database, table_name)
+#         # 准备 INSERT 语句
+#         insert_query = f"INSERT INTO {full_table_name} VALUES"
+#         # 转换数据 (使用 .values.tolist() 兼容性好)
+#         data_to_insert = df_to_insert.values.tolist()
+#         total_rows = len(data_to_insert)
+#         chunk_size = int(chunk_size)
+#         for i in range(0, total_rows, chunk_size):
+#             chunk = data_to_insert[i : i + chunk_size]
+#             client.execute(insert_query, chunk)
+
+#         print(f"成功插入 {total_rows} 行数据到 {full_table_name}。")
+
+#     except Exception as e:
+#         print(f"存储到 ClickHouse 失败: {e}")
+#         raise e
 
 
 ## 预处理

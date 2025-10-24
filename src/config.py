@@ -4,7 +4,7 @@
 # ===== 实验室中 ClickHouse 服务器配置 =====
 # ================================================================
 CLICKHOUSE_SHARED_HOST = "192.168.121.57"
-CLICKHOUSE_SHARED_PORT = "5050"  # 应为整数？
+CLICKHOUSE_SHARED_PORT = "5050"
 CLICKHOUSE_SHARED_USER = "root"
 CLICKHOUSE_SHARED_PASSWORD = "123456"
 CLICKHOUSE_SHARED_DB = "original_data"
