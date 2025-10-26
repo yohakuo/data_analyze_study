@@ -20,14 +20,14 @@ from src.table_definitions import (
 from src.utils import process_dataframe
 
 # --- 配置文件路径 ---
-FILE_1_PATH = "D:/dataset/游客量数据/zcp_小牌坊检票口_莫高窟闸机2.xlsx"
+FILE_1_PATH = "D:/dataset/游客量数据/zcp_小牌坊检票口_莫高窟闸机1.xlsx"
 FILE_2_PATH = "D:/dataset/游客量数据/莫高窟洞窟游客数据9-13~9-19.xlsx"
 # FILE_3_PATH = "data/..."
 
 
 def process_task_1(client):
     """
-    执处理 访客流量数据 (zcp_小牌坊...)
+    zcp_小牌坊...
     支持读取所有 sheet 并合并。
     增加了 float -> int 的类型转换。
     """
@@ -35,7 +35,7 @@ def process_task_1(client):
         db_name = config.CLICKHOUSE_SHARED_DB
         # 1. 建表
         if not create_table_if_not_exists(client, db_name, TABLE_1_NAME, TABLE_1_SCHEMA):
-            print("[任务 1] 失败: 无法创建表。")
+            print("失败: 无法创建表。")
             return
 
         # 2. 读取 (E - Extract)
@@ -112,8 +112,8 @@ def main():
     try:
         DB = config.CLICKHOUSE_SHARED_DB
         client = get_clickhouse_client(DB)
-        # process_task_1(client)
-        process_task_2(client)
+        process_task_1(client)
+        # process_task_2(client)
 
     except Exception as e:
         print(f"\n[主程序] 发生未捕获的严重错误: {e}")
