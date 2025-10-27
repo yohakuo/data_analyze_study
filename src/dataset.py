@@ -335,23 +335,17 @@ def _create_raw_tables_if_not_exists(client):
 
 # 批量处理温湿度和CO2传感器的Excel文件
 def process_excel_file(file_path, client, rules_config, parse_config):
-    """
-    处理单个 Excel 文件：解析、读取所有年份 Sheet、并插入数据库。
-    """
     filename = os.path.basename(file_path)
-
-    # 解析文件名 (使用 config 中的 RAW_FILENAME_REGEX)
     match = re.match(parse_config["filename_regex"], filename)
     if not match:
         print(f"  文件名 {filename} 不符合规则，跳过。")
         return
 
     # 提取信息
-    device_id = match.group(1)  # 按您要求，保持原始大小写
+    device_id = match.group(1)
     temple_id = match.group(2)
     keyword = match.group(3)
 
-    # 获取映射规则 (使用 config 中的 RAW_SENSOR_MAPPING_CONFIG)
     if keyword not in rules_config:
         print(f"  未找到关键字 '{keyword}' 的映射规则，跳过。")
         return
@@ -503,7 +497,6 @@ def create_table_if_not_exists(client, db_name, table_name, schema_template):
 
     except Exception as e:
         print(f"错误: 创建表 {db_name}.`{table_name}` 失败: {e}")
-        # 打印出失败的SQL语句，方便调试
         print("失败的SQL查询:\n", create_table_query)
         return False
 

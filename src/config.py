@@ -7,7 +7,7 @@ CLICKHOUSE_SHARED_HOST = "192.168.121.57"
 CLICKHOUSE_SHARED_PORT = "5050"
 CLICKHOUSE_SHARED_USER = "root"
 CLICKHOUSE_SHARED_PASSWORD = "123456"
-CLICKHOUSE_SHARED_DB = "original_data"
+CLICKHOUSE_SHARED_DB = "test_data"  # original_data
 CLICKHOUSE_MEASUREMENT_NAME = "sensor_temp_humidity"  # sensor_co2
 
 # ====================================================================
@@ -20,10 +20,8 @@ RAW_FILE_PARSING_CONFIG = {
     # 组2: temple_id (如 045)
     # 组3: sensor_type_keyword (如 无线二氧化碳传感器 或 无线温湿度传感器)
     "filename_regex": r"^([^_]+)_(\d+)窟_.*(无线温湿度传感器|无线二氧化碳传感器).*\.xlsx?$",
-    # Excel 读取配置
     "excel_reading": {
         "header_row": 0,
-        # 定义要处理的 Sheet 年份范围 (包含首尾)
         "sheet_year_range": (2020, 2025),
     },
 }
@@ -32,7 +30,6 @@ RAW_FILE_PARSING_CONFIG = {
 RAW_SENSOR_MAPPING_CONFIG = {
     "无线温湿度传感器": {
         "clickhouse_table": "sensor_temp_humidity",
-        # Excel 列名 -> 数据库列名 映射
         "column_mapping": {
             "采集时间": "time",
             "空气温度（℃）": "temperature",
