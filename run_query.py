@@ -1,3 +1,4 @@
+import re  # 导入 re 模块，用于更灵活地解析
 import sys
 
 from clickhouse_driver import Client
@@ -14,27 +15,19 @@ except AttributeError as e:
     sys.exit(1)
 
 
-print(f"正在尝试连接到数据库: {DB}...")
-
 try:
-    # 2. 使用封装的函数来处理连接和回退逻辑
     try:
-        # 尝试连接到目标 DB
-        client = get_clickhouse_client(DB)
+        client = get_clickhouse_client(target="shared")
 
     except Exception:
-        # 如果目标 DB 失败 (例如不存在)
-        print(f"警告：无法连接到数据库 '{DB}'。")
-        print("正在尝试连接到 'default' 数据库...")
         try:
-            # 回退到 'default' 数据库
-            client = get_clickhouse_client("default")
+            client = get_clickhouse_client(target="default")
             DB = "default"  # 更新当前 DB 变量，用于显示提示符
         except Exception as default_e:
             print(f"❌ 连 'default' 数据库也连接失败: {default_e}")
             sys.exit(1)
 
-    print("\n请输入你的 SQL 查询。")
+    print("\n请输入 SQL 查询。")
     print("输入 'exit' 或 'quit' 退出。")
 
     # --- 启动交互式循环 ---
@@ -45,14 +38,30 @@ try:
             break
 
         # 跳过空行
-        if not query.strip():
+        query_stripped = query.strip()
+        if not query_stripped:
             continue
+
+        # 匹配 'USE database_name' (忽略大小写, 处理分号)
+
+        temp_new_db = None  # 暂存新的数据库名称
+
+        # 使用正则表达式来匹配 'USE' 命令
+        # re.IGNORECASE (i) 忽略大小写
+        # re.DOTALL (s) 让 . 也能匹配换行符
+        # ^\s*USE\s+     -> 以 'USE' 开头 (允许前后有空格)
+        # ([a-zA-Z0-9_]+) -> 捕获数据库名称 (只允许标准字符)
+        match = re.match(
+            r"^\s*USE\s+([a-zA-Z0-9_]+)\s*;?\s*$", query_stripped, re.IGNORECASE | re.DOTALL
+        )
+
+        if match:
+            # 如果匹配成功，match.group(1) 就是捕获到的数据库名
+            temp_new_db = match.group(1)
 
         # --- 执行查询 ---
         try:
             # 使用 with_column_types=True
-            # 它返回一个元组: (rows, column_info)
-            # column_info 是一个包含 (name, type) 元组的列表
             query_result = client.execute(query, with_column_types=True)
 
             rows = query_result[0]
@@ -75,10 +84,21 @@ try:
 
             else:
                 # 对于没有返回列的语句 (例如 CREATE, INSERT, ALTER)
-                # 此时 rows (query_result[0]) 通常是空列表 []
-                print("OK.")
+
+                # --- [!!! 修改逻辑开始 !!!] ---
+                # 如果这是一个 'USE' 命令，并且它成功执行了 (没抛异常)
+                if temp_new_db:
+                    # 正式更新 DB 变量
+                    DB = temp_new_db
+                    print("OK.")
+                else:
+                    # 否则，就是其他普通的 OK 命令
+                    print("OK.")
+                # --- [!!! 修改逻辑结束 !!!] ---
 
         except Exception as e:
+            # 如果 'USE' 命令失败 (例如数据库不存在)，
+            # 异常会在这里被捕获，DB 变量不会被更新。
             print(f"❌ SQL 错误: {e}")
 
 except Exception as e:

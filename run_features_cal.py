@@ -7,7 +7,6 @@ import pandas as pd
 from src.dataset import (
     get_clickhouse_client,
     get_timeseries_data,
-    store_features_to_center_clickhouse,
     store_features_to_clickhouse,
 )
 from src.features import calculate_features

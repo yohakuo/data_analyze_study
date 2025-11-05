@@ -5,6 +5,7 @@ import re
 import time
 
 import pandas as pd
+import pandas.api.types as ptypes
 
 from src import config  # 导入中央配置
 
@@ -62,3 +63,66 @@ def process_dataframe(df_raw, column_map):
         df["time"] = pd.to_datetime(df["time"], errors="coerce")
         df.dropna(subset=["time"], inplace=True)
     return df
+
+
+def generate_create_table_sql(
+    df: pd.DataFrame, full_table_path: str, engine: str = "MergeTree", order_by: str = None
+) -> str:
+    """
+    [“自动建表”工具]
+    从 Pandas DataFrame 自动推断数据类型，并生成 ClickHouse 的 CREATE TABLE 语句。
+    """
+    # --- 类型映射字典 ---
+    # 将 Pandas/Numpy 的 dtypes 映射为 ClickHouse 的数据类型
+    type_mapping = {
+        "int8": "Int8",
+        "int16": "Int16",
+        "int32": "Int32",
+        "int64": "Int64",
+        "uint8": "UInt8",
+        "uint16": "UInt16",
+        "uint32": "UInt32",
+        "uint64": "UInt64",
+        "float32": "Float32",
+        "float64": "Float64",
+        "object": "String",  # 默认将 object 视为 String
+        "bool": "UInt8",
+    }
+
+    column_definitions = []
+
+    # 遍历所有列，包括被重置的索引
+    for col, dtype in df.dtypes.items():
+        # 清理列名，确保它们是合法的SQL标识符
+        col_name = f"`{re.sub(r'W+', '_', col).strip('_')}`"
+
+        # 特殊处理：日期时间类型
+        if ptypes.is_datetime64_any_dtype(dtype):
+            col_type = "DateTime"  # 使用 clickhouse_driver 兼容的 DateTime
+        # 特殊处理：字符串/对象类型
+        elif ptypes.is_object_dtype(dtype):
+            col_type = "String"
+        # 其他数值/布尔类型
+        else:
+            col_type = type_mapping.get(dtype.name, "String")  # 默认为 String
+
+        column_definitions.append(f"{col_name} {col_type}")
+
+    # --- 拼接 SQL 语句 ---
+    columns_sql = ",\n        ".join(column_definitions)
+
+    if not order_by and df.columns.any():
+        # 如果未指定排序键，默认使用第一列
+        order_by_col = f"`{re.sub(r'W+', '_', df.columns[0]).strip('_')}`"
+        order_by = f"({order_by_col})"
+
+    # 我们直接在这里生成完整的 SQL，并包含 IF NOT EXISTS
+    create_sql = f"""
+    CREATE TABLE IF NOT EXISTS {full_table_path}
+    (
+        {columns_sql}
+    )
+    ENGINE = {engine}()
+    ORDER BY {order_by}
+    """
+    return create_sql

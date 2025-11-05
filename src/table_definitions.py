@@ -1,4 +1,11 @@
 """
+存放所有表定义
+"""
+
+# ===================================================================
+# --- 原始传感器数据表 ---
+# ===================================================================
+"""
 存放所有 Excel 导入任务的“定义”。
 每个任务包含三个部分：
 1. 数据库中的表名 (TABLE_NAME)
@@ -46,7 +53,7 @@ TABLE_2_MAP = {
     "实时人数": "real_time_headcount",
     "当日接待": "same_day_reception",
     "近七天接待": "past_seven_days_reception",
-    "逗留时长": "dwell_time_range",  # 这个字段是文本，后续需要特殊处理
+    "逗留时长": "dwell_time_range",
     "洞窟号": "temple_id",
 }
 
@@ -74,7 +81,7 @@ TABLE_3_MAP = {
     "实时人数": "real_time_headcount",
     "当日接待": "same_day_reception",
     "近七天接待": "past_seven_days_reception",
-    "逗留时长": "dwell_time_range",  # 这个字段是文本，后续需要特殊处理
+    "逗留时长": "dwell_time_range",
     "洞窟号": "temple_id",
 }
 
@@ -92,4 +99,34 @@ CREATE TABLE IF NOT EXISTS {db_name}.`{table_name}`
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(time)
 ORDER BY (temple_id, time)
+"""
+
+# ===================================================================
+# --- 原始传感器数据表 ---
+# ===================================================================
+
+RAW_TEMP_HUMIDITY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS {db_name}.{table_name} (
+    temple_id     CHAR(20),
+    device_id     CHAR(30),
+    time          DATETIME,
+    humidity      FLOAT(32),
+    temperature   FLOAT(32),
+    created_at    TIMESTAMP
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(time)
+ORDER BY (temple_id, device_id, time)
+"""
+
+RAW_CO2_SCHEMA = """
+CREATE TABLE IF NOT EXISTS {db_name}.{table_name} (
+    temple_id     CHAR(20),
+    device_id     CHAR(30),
+    time          DATETIME,
+    co2_collected FLOAT(32),
+    co2_corrected FLOAT(32),
+    created_at    TIMESTAMP
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(time)
+ORDER BY (temple_id, device_id, time)
 """

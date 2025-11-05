@@ -1,10 +1,12 @@
-# 与数据库连接、读取和写入相关的操作,包括从influxdb读取数据,以及将计算好的特征存入clickhouse
+# -*- coding: utf-8 -*-
+"""
+与数据库连接、数据读写、预处理相关的核心函数。
+"""
 
 import csv
 import datetime
 import os
 import re
-import uuid
 from zoneinfo import ZoneInfo
 
 from clickhouse_driver import Client
@@ -13,88 +15,72 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 import numpy as np
 import pandas as pd
 
-from src import config
-from src.utils import timing_decorator
+from src import config, table_definitions
+from src.utils import generate_create_table_sql, timing_decorator
+
+# ====================================================================
+#   数据库连接 (Database Clients)
+# ====================================================================
 
 
-## influxdb
-def import_csv_to_influx(csv_filepath: str):
+def get_clickhouse_client(target: str = "shared") -> Client:
     """
-    读取指定的 CSV 文件，并将其内容导入到 InfluxDB。
+    根据目标名称 ('local' 或 'shared')，创建并返回一个 ClickHouse 客户端。
+    这个客户端【没有】连接到任何特定的数据库。
     """
-    # 将配置项从 config 模块中读入
-    local_tz = ZoneInfo(config.LOCAL_TIMEZONE)
+    print(f"  ► 正在创建指向 '{target}' ClickHouse 服务器的连接...")
+    try:
+        if target == "local":
+            return Client(
+                host=config.CLICKHOUSE_HOST,
+                port=config.CLICKHOUSE_PORT,
+                user=config.CLICKHOUSE_USER,
+                password=config.CLICKHOUSE_PASSWORD,
+            )
+        elif target == "shared":
+            return Client(
+                host=config.CLICKHOUSE_SHARED_HOST,
+                port=config.CLICKHOUSE_SHARED_PORT,
+                user=config.CLICKHOUSE_SHARED_USER,
+                password=config.CLICKHOUSE_SHARED_PASSWORD,
+            )
+        else:
+            raise ValueError(f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。")
+    except Exception as e:
+        print(f"❌ 连接到 '{target}' ClickHouse 时出错: {e}")
+        raise
 
-    # 建立 InfluxDB 连接
-    with InfluxDBClient(
-        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
-    ) as client:
-        write_api = client.write_api(write_options=SYNCHRONOUS)
-        points_buffer = []
-        batch_size = 5000  # 批处理大小
-        count = 0
-        total_count = 0
 
-        try:
-            with open(csv_filepath, "r", encoding="gbk") as csvfile:
-                reader = csv.DictReader(csvfile)
-                for row in reader:
-                    try:
-                        point = Point(config.INFLUX_MEASUREMENT_NAME)
+# ====================================================================
+#   数据读写 (Data I/O)
+# ====================================================================
 
-                        for tag_key in config.TAG_COLUMNS:
-                            point.tag(tag_key, row.get(tag_key))
 
-                        for field_key in config.FIELD_COLUMNS:
-                            try:
-                                field_value = float(row[field_key])
-                                point.field(field_key, field_value)
-                            except (ValueError, TypeError, KeyError):
-                                continue  # 如果某个字段为空或格式错误，跳过该字段
+def read_excel_data(file_path: str, sheet_name=0, header_row=0, dtypes=None) -> pd.DataFrame:
+    """
+    通用 Excel 读取函数。
 
-                        naive_dt = datetime.strptime(
-                            row[config.TIMESTAMP_COLUMN], config.TIMESTAMP_FORMAT
-                        )
-                        aware_dt = naive_dt.replace(tzinfo=local_tz)
-                        point.time(aware_dt)
+    Args:
+        file_path (str): 文件路径。
+        sheet_name (int or str): 表单名 (默认为第一个)。
+        header_row (int): 标题行 (0 是第一行)。
+        dtypes (dict, optional): 指定列的数据类型。
 
-                        points_buffer.append(point)
-                        count += 1
-                        total_count += 1
-
-                        if count >= batch_size:
-                            write_api.write(
-                                bucket=config.INFLUXDB_BUCKET,
-                                org=config.INFLUXDB_ORG,
-                                record=points_buffer,
-                            )
-                            print(f"  ...已写入 {total_count} 行...")
-                            points_buffer = []
-                            count = 0
-
-                    except Exception as e:
-                        print(f"    处理文件 {csv_filepath} 的第 {total_count + 1} 行时出错: {e}")
-
-                # 写入最后一批不足 batch_size 的数据
-                if points_buffer:
-                    write_api.write(
-                        bucket=config.INFLUXDB_BUCKET,
-                        org=config.INFLUXDB_ORG,
-                        record=points_buffer,
-                    )
-
-                print(
-                    f"✅ 文件 '{os.path.basename(csv_filepath)}' 导入成功！总共处理了 {total_count} 行数据。"
-                )
-
-        except FileNotFoundError:
-            print(f"错误：找不到文件 '{csv_filepath}'。")
-        except Exception as e:
-            print(f"错误：读取或写入文件 '{csv_filepath}' 时发生严重错误: {e}")
+    Returns:
+        pd.DataFrame: 清理后的数据帧，如果失败则返回空的 DataFrame。
+    """
+    try:
+        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, dtype=dtypes)
+        df_cleaned = df.dropna(how="all")
+        return df_cleaned
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {file_path}")
+    except Exception as e:
+        print(f"错误: 读取 Excel 文件 {file_path} 失败: {e}")
+    return pd.DataFrame()
 
 
 @timing_decorator
-##可指定表，字段和时间
 def get_timeseries_data(
     measurement_name: str,
     field_name: str,
@@ -102,35 +88,25 @@ def get_timeseries_data(
     stop_time: datetime.datetime = None,
 ) -> pd.DataFrame:
     """
-    从 InfluxDB 查询指定表、指定字段、指定时间范围的数据。
-
-    Args:
-        measurement_name (str): 要查询的 InfluxDB Measurement (表名)。
-        field_name (str): 要查询的字段名。
-        start_time (datetime, optional): 查询的开始时间 (带时区)。默认为 None (从头开始)。
-        stop_time (datetime, optional): 查询的结束时间 (带时区)。默认为 None (直到现在)。
+    从 InfluxDB 查询指定表、字段和时间范围的时间序列数据。
     """
-
-    if start_time is None:
-        range_clause = "start: 0"  # 如果没有指定开始时间，则查询所有历史数据
-    else:
-        # 将 Python 的 datetime 对象转换为 InfluxDB 查询所需的 RFC3339 UTC 字符串
+    range_clause = "start: 0"
+    if start_time:
         start_utc_str = start_time.astimezone(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%fZ"
         )
-        if stop_time is None:
-            range_clause = f"start: {start_utc_str}"
-        else:
+        range_clause = f"start: {start_utc_str}"
+        if stop_time:
             stop_utc_str = stop_time.astimezone(datetime.timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%S.%fZ"
             )
-            range_clause = f"start: {start_utc_str}, stop: {stop_utc_str}"
+            range_clause += f", stop: {stop_utc_str}"
 
     with InfluxDBClient(
         url=config.INFLUXDB_URL,
         token=config.INFLUXDB_TOKEN,
         org=config.INFLUXDB_ORG,
-        timeout=90_000,  # 设置超时为 90,000 毫秒 (90秒)
+        timeout=90_000,  # 90秒超时
     ) as client:
         query = f'''
         from(bucket: "{config.INFLUXDB_BUCKET}")
@@ -139,7 +115,6 @@ def get_timeseries_data(
           |> filter(fn: (r) => r["_field"] == "{field_name}")
           |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
         '''
-
         print(f"正在从 InfluxDB 的表 '{measurement_name}' 中查询数据...")
         df = client.query_api().query_data_frame(query=query, org=config.INFLUXDB_ORG)
 
@@ -148,203 +123,442 @@ def get_timeseries_data(
             return df
 
         print("数据查询成功，正在进行预处理...")
-
         if field_name in df.columns and "_time" in df.columns:
-            df_cleaned = df[["_time", field_name]]
-            df_cleaned = df_cleaned.set_index("_time")
+            df_cleaned = df[["_time", field_name]].set_index("_time")
             df_cleaned.index = pd.to_datetime(df_cleaned.index)
             df_cleaned[field_name] = pd.to_numeric(df_cleaned[field_name], errors="coerce")
-            df_cleaned = df_cleaned.dropna()
+            df_cleaned.dropna(inplace=True)
             return df_cleaned
         else:
             print(f"错误：返回的数据中缺少 '_time' 或 '{field_name}' 列。")
             return pd.DataFrame()
 
 
-## clickhouse
-
-
-def get_clickhouse_client(database_name):
+def create_table_if_not_exists(
+    client: Client, db_name: str, table_name: str, schema_template: str
+) -> bool:
     """
-    尝试连接到指定的 ClickHouse 数据库。
+    根据提供的模板，创建数据库和表（如果不存在）。
+
+    Args:
+        client: ClickHouse 数据库连接。
+        db_name: 数据库名。
+        table_name: 要创建的表名。
+        schema_template: 包含 {db_name} 和 {table_name} 占位符的 SQL 字符串。
+
+    Returns:
+        bool: 成功返回 True，失败返回 False。
     """
     try:
-        client = Client(
-            host=config.CLICKHOUSE_SHARED_HOST,
-            port=config.CLICKHOUSE_SHARED_PORT,
-            user=config.CLICKHOUSE_SHARED_USER,
-            password=config.CLICKHOUSE_SHARED_PASSWORD,
-            database=database_name,  # <-- 使用参数
-        )
-        print(
-            f"成功连接到 ClickHouse {config.CLICKHOUSE_SHARED_HOST}:{config.CLICKHOUSE_SHARED_PORT} (数据库: {database_name})"
-        )
-        return client
+        client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+        create_table_query = schema_template.format(db_name=db_name, table_name=table_name)
+        client.execute(create_table_query)
+        # print(f"表 {db_name}.`{table_name}` 检查/创建 成功。")
+        return True
     except Exception as e:
-        # 打印错误，但让调用者（主脚本）来处理异常
-        print(f"连接 ClickHouse 数据库 '{database_name}' 失败: {e}")
-        raise  # 重新抛出异常
+        print(f"错误: 创建表 {db_name}.`{table_name}` 失败: {e}")
+        return False
 
 
-# def store_features_to_clickhouse(
-#     df: pd.DataFrame,
-#     table_name: str,
-#     field_name: str,
-#     device_id: str,
-#     temple_id: str,
-#     stats_cycle: str,
-# ):
-#     """
-#     接收【宽格式】的特征 DataFrame，为其生成唯一ID，转换为【长格式】，并存入 ClickHouse。
-#     """
-#     if df.empty:
-#         print("\n特征数据为空，跳过存储。")
-#         return
-
-#     print(f"\n开始处理并存入 ClickHouse 的表: '{table_name}'...")
-
-#     try:
-#         df_long = df.reset_index()
-#         feature_columns = [col for col in df.columns if col not in ["分析周期"]]
-#         df_long = pd.melt(
-#             df_long,
-#             id_vars=["_time"],
-#             value_vars=feature_columns,
-#             var_name="feature_key",
-#             value_name="feature_value",
-#         )
-
-#         df_long["stat_id"] = [uuid.uuid4() for _ in range(len(df_long))]
-#         df_long["temple_id"] = temple_id
-#         df_long["device_id"] = device_id
-#         df_long["monitored_variable"] = field_name
-#         df_long["stats_cycle"] = stats_cycle
-#         df_long["created_at"] = datetime.datetime.now()
-#         df_long.rename(columns={"_time": "stats_start_time"}, inplace=True)
-
-#         final_columns = [
-#             "stat_id",
-#             "temple_id",
-#             "device_id",
-#             "stats_start_time",
-#             "monitored_variable",
-#             "stats_cycle",
-#             "feature_key",
-#             "feature_value",
-#             "created_at",
-#         ]
-#         df_to_insert = df_long[final_columns]
-#         df_to_insert["feature_value"] = pd.to_numeric(
-#             df_to_insert["feature_value"], errors="coerce"
-#         )
-#         df_to_insert["standby_field01"] = ""
-
-#         client = clickhouse_connect.get_client(
-#             host=config.CLICKHOUSE_HOST,
-#             port=config.CLICKHOUSE_PORT,
-#             username=config.CLICKHOUSE_USER,
-#             password=config.CLICKHOUSE_PASSWORD,
-#         )
-#         client.command(f"CREATE DATABASE IF NOT EXISTS {config.DATABASE_NAME}")
-#         create_table_query = f"""
-#         CREATE TABLE IF NOT EXISTS {config.DATABASE_NAME}.`{table_name}`
-#         (
-#             `stat_id` UUID,
-#             `temple_id` CHAR(20),
-#             `device_id` CHAR(30),
-#             `stats_start_time` DATETIME,
-#             `monitored_variable` CHAR(20),
-#             `stats_cycle` CHAR(10),
-#             `feature_key` CHAR(30),
-#             `feature_value` VARCHAR(30),
-#             `standby_field01` CHAR(30),
-#             `created_at` TIMESTAMP
-#         ) ENGINE = MergeTree() ORDER BY (stats_start_time, device_id, feature_key)
-#         """
-#         client.command(create_table_query)
-
-#         # 在存入 ClickHouse 前，先将数据保存到 CSV 文件
-#         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-#         csv_filename = f"{table_name}_{timestamp}.csv"
-#         print(f"  ► 正在将数据保存到 CSV 文件: {csv_filename} ...")
-#         try:
-#             df_to_insert.to_csv(
-#                 csv_filename, index=False, encoding="utf-8-sig", float_format="%.2f"
-#             )
-#             print(f"  ✔ CSV 文件保存成功: {csv_filename}")
-#         except Exception as csv_error:
-#             print(f"  ❌ 保存 CSV 文件时出错: {csv_error}")
-
-#         # 写入CSV之后，将数值转换为格式化的字符串
-#         df_to_insert["feature_value"] = df_to_insert["feature_value"].map("{:.2f}".format)
-#         # 处理可能因coerce产生的NaN值，将其转换为空字符串
-#         df_to_insert["feature_value"] = df_to_insert["feature_value"].replace("nan", "")
-
-#         print(f"  ...正在插入 {len(df_to_insert)} 行长格式特征数据...")
-#         client.insert_df(f"{config.DATABASE_NAME}.`{table_name}`", df_to_insert)
-
-#     except Exception as e:
-#         print(f"❌ 存入 ClickHouse 时发生错误: {e}")
-
-
-def _create_raw_tables_if_not_exists(client):
+def _create_raw_tables_if_not_exists(client: Client):
     """
-    创建原始数据表（如果不存在）。
+    使用 src.table_definitions 中的模板创建原始数据表（如果不存在）。
     """
     db_name = config.CLICKHOUSE_SHARED_DB
 
-    # 1. 温湿度表 (从 config 获取表名)
-    table_temp = config.RAW_SENSOR_MAPPING_CONFIG["无线温湿度传感器"]["clickhouse_table"]
-    create_temp_query = f"""
-    CREATE TABLE IF NOT EXISTS {db_name}.{table_temp} (
-        temple_id     CHAR(20),
-        device_id     CHAR(30),
-        time          DATETIME,
-        humidity      FLOAT(32),
-        temperature   FLOAT(32),
-        created_at    TIMESTAMP
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMM(time)
-    ORDER BY (temple_id, device_id, time)
-    """
+    # 1. 从 config 获取表名，从 table_definitions 获取表结构
+    table_temp_name = config.RAW_SENSOR_MAPPING_CONFIG["无线温湿度传感器"]["clickhouse_table"]
+    create_table_if_not_exists(
+        client, db_name, table_temp_name, table_definitions.RAW_TEMP_HUMIDITY_SCHEMA
+    )
 
-    # 2. CO2 表 (从 config 获取表名)
-    table_co2 = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"]["clickhouse_table"]
-    create_co2_query = f"""
-    CREATE TABLE IF NOT EXISTS {db_name}.{table_co2} (
-        temple_id     CHAR(20),
-        device_id     CHAR(30),
-        time          DATETIME,
-        co2_collected FLOAT(32),
-        co2_corrected FLOAT(32),
-        created_at    TIMESTAMP
-    ) ENGINE = MergeTree()
-    PARTITION BY toYYYYMM(time)
-    ORDER BY (temple_id, device_id, time)
+    # 2. 同上，处理 CO2 表
+    table_co2_name = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"]["clickhouse_table"]
+    create_table_if_not_exists(client, db_name, table_co2_name, table_definitions.RAW_CO2_SCHEMA)
+
+
+def get_global_time_range(
+    client: Client, database_name: str, table_name: str, time_column: str = "time"
+) -> tuple[datetime.datetime, datetime.datetime]:
     """
+    查询 ClickHouse 表，找出数据中最早和最晚的时间戳。
+    """
+    full_table_path = f"`{database_name}`.`{table_name}`"
+    query = f"SELECT min(`{time_column}`), max(`{time_column}`) FROM {full_table_path}"
 
     try:
-        client.execute(create_temp_query)
-        print(f"表 {db_name}.{table_temp} 检查/创建 成功。")
-        client.execute(create_co2_query)
-        print(f"表 {db_name}.{table_co2} 检查/创建 成功。")
+        result = client.execute(query)
+        if not result or not result[0]:
+            raise Exception("表为空或无法查询到时间范围。")
+
+        min_date, max_date = result[0]
+
+        # 确保返回的是带时区的 datetime 对象
+        min_date = pd.to_datetime(min_date).tz_localize("UTC")
+        max_date = pd.to_datetime(max_date).tz_localize("UTC")
+
+        return min_date, max_date
+
     except Exception as e:
-        print(f"创建表失败: {e}")
+        print(f"❌  侦察时间范围时出错: {e}")
         raise
 
 
-# 批量处理温湿度和CO2传感器的Excel文件
-def process_excel_file(file_path, client, rules_config, parse_config):
+def load_to_clickhouse(client: Client, df: pd.DataFrame, table_name: str) -> bool:
+    """
+    通用的 ClickHouse 数据加载函数，根据 DataFrame 的列名自动插入。
+    """
+    if df.empty:
+        print(f"数据为空，跳过插入表 '{table_name}'")
+        return False
+
+    try:
+        data_to_insert = df.to_dict("records")
+        # 构造插入语句，使用反引号 ` ` 保证字段名正确
+        column_names = ", ".join([f"`{col}`" for col in df.columns])
+        query = f"INSERT INTO {table_name} ({column_names}) VALUES"
+        client.execute(query, data_to_insert)
+        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
+        return True
+    except Exception as e:
+        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
+        if data_to_insert:
+            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
+        return False
+
+
+def import_csv_to_influx(csv_filepath: str):
+    """
+    读取指定的 CSV 文件，并将其内容批量导入到 InfluxDB。
+    """
+    local_tz = ZoneInfo(config.LOCAL_TIMEZONE)
+    batch_size = 5000
+
+    with InfluxDBClient(
+        url=config.INFLUXDB_URL, token=config.INFLUXDB_TOKEN, org=config.INFLUXDB_ORG
+    ) as client:
+        write_api = client.write_api(write_options=SYNCHRONOUS)
+        points_buffer = []
+        total_count = 0
+
+        try:
+            with open(csv_filepath, "r", encoding="gbk") as csvfile:
+                reader = csv.DictReader(csvfile)
+                for i, row in enumerate(reader, 1):
+                    try:
+                        point = Point(config.INFLUX_MEASUREMENT_NAME)
+                        for tag_key in config.TAG_COLUMNS:
+                            point.tag(tag_key, row.get(tag_key))
+
+                        for field_key in config.FIELD_COLUMNS:
+                            try:
+                                point.field(field_key, float(row[field_key]))
+                            except (ValueError, TypeError, KeyError):
+                                continue  # 跳过空或格式错误的字段
+
+                        naive_dt = datetime.datetime.strptime(
+                            row[config.TIMESTAMP_COLUMN], config.TIMESTAMP_FORMAT
+                        )
+                        point.time(naive_dt.replace(tzinfo=local_tz))
+
+                        points_buffer.append(point)
+                        if len(points_buffer) >= batch_size:
+                            write_api.write(bucket=config.INFLUXDB_BUCKET, record=points_buffer)
+                            total_count += len(points_buffer)
+                            print(f"  ...已写入 {total_count} 行...")
+                            points_buffer.clear()
+
+                    except Exception as e:
+                        print(f"    处理文件 {csv_filepath} 的第 {i} 行时出错: {e}")
+
+                if points_buffer:  # 写入最后一批
+                    write_api.write(bucket=config.INFLUXDB_BUCKET, record=points_buffer)
+                    total_count += len(points_buffer)
+
+            print(
+                f"✅ 文件 '{os.path.basename(csv_filepath)}' 导入成功！总共处理了 {total_count} 行数据。"
+            )
+
+        except FileNotFoundError:
+            print(f"错误：找不到文件 '{csv_filepath}'。")
+        except Exception as e:
+            print(f"错误：读取或写入文件 '{csv_filepath}' 时发生严重错误: {e}")
+
+
+def get_data_from_clickhouse(
+    client: Client,
+    table_name: str,
+    field_name: str,
+    start_time: datetime.datetime = None,
+    end_time: datetime.datetime = None,
+) -> pd.DataFrame:
+    """
+    从 ClickHouse 的【特征长表】中，提取指定字段的数据。
+    如果提供了时间范围，则按范围提取；否则，提取【全部】数据。
+    """
+    print(f"  ► 正在从 ClickHouse 的表 '{table_name}' 中提取 '{field_name}' 的数据...")
+
+    where_conditions = [
+        "monitored_variable = %(field_name)s",
+        "feature_key = '均值'",  # 假设我们总是基于“均值”进行插值
+    ]
+    params = {"field_name": field_name}
+
+    if start_time:
+        where_conditions.append("stats_start_time >= %(start)s")
+        params["start"] = start_time.astimezone(datetime.timezone.utc)
+
+    if end_time:
+        where_conditions.append("stats_start_time <= %(end)s")
+        params["end"] = end_time.astimezone(datetime.timezone.utc)
+
+    where_clause = " AND ".join(where_conditions)
+
+    query = f"""
+    SELECT stats_start_time, feature_value
+    FROM {config.DATABASE_NAME}.`{table_name}`
+    WHERE {where_clause}
+    ORDER BY stats_start_time
+    """
+
+    df = client.query_df(query, parameters=params)
+
+    if df.empty:
+        print(f"  ► 警告：在 ClickHouse 表 '{table_name}' 中未找到数据。")
+        return pd.DataFrame()
+
+    # --- 数据预处理 ---
+    df["stats_start_time"] = pd.to_datetime(df["stats_start_time"]).dt.tz_localize("UTC")
+    df = df.set_index("stats_start_time")
+    df["feature_value"] = pd.to_numeric(df["feature_value"], errors="coerce")
+    df.rename(columns={"feature_value": field_name}, inplace=True)
+    df = df.dropna()
+
+    print(f"  ► 成功从 ClickHouse 提取了 {len(df)} 行数据。")
+    return df
+
+
+def get_full_table_from_clickhouse(
+    client: Client,
+    database_name: str,
+    table_name: str,
+    start_time: datetime.datetime = None,
+    end_time: datetime.datetime = None,
+) -> pd.DataFrame:
+    """
+    从 ClickHouse 提取【指定时间范围】的【整张表】数据。
+    如果时间范围为 None，则提取全部数据（但可能导致内存溢出）。
+    """
+    # print(f"  ► 正在从 ClickHouse '{database_name}'.`{table_name}` 提取数据...")
+
+    full_table_path = f"`{database_name}`.`{table_name}`"
+
+    where_conditions = []
+    params = {}
+
+    # 原始表的时间列
+    time_col = "time"
+
+    if start_time:
+        where_conditions.append(f"`{time_col}` >= %(start)s")
+        params["start"] = start_time.astimezone(datetime.timezone.utc)
+    if end_time:
+        where_conditions.append(f"`{time_col}` < %(end)s")
+        params["end"] = end_time.astimezone(datetime.timezone.utc)
+
+    where_clause = ""
+    if where_conditions:
+        where_clause = "WHERE " + " AND ".join(where_conditions)
+
+    query = f"SELECT * FROM {full_table_path} {where_clause} ORDER BY `{time_col}`"
+
+    try:
+        df = client.query_dataframe(query, params=params)
+
+        if df.empty:
+            print(f"  ► 警告：在指定时间范围内，表 '{full_table_path}' 为空。")
+            return pd.DataFrame()
+
+        if time_col not in df.columns:
+            print(f"❌ 错误：从ClickHouse返回的数据中找不到 '{time_col}' 列。")
+            return pd.DataFrame()
+        # 转换为 Pandas Datetime 对象
+        df[time_col] = pd.to_datetime(df[time_col], utc=True)
+        # 如果有重复时间戳，取平均值
+        # df = df.groupby(time_col).mean(numeric_only=True)
+        # 将其本地化为 UTC
+        # df.index = df.index.tz_localize("UTC")
+
+        return df
+
+    except Exception as e:
+        print(f"❌  从 {full_table_path} 提取数据时出错: {e}")
+        raise
+
+
+def store_dataframe_to_clickhouse(
+    df: pd.DataFrame, client: Client, database_name: str, table_name: str, chunk_size: int = 100000
+):
+    """
+    将 Pandas DataFrame 【分块】写入【指定的数据库】和【指定的表】。
+    """
+    if df.empty:
+        print("\n  ► 数据为空，跳过写入 ClickHouse。")
+        return
+
+    full_table_path = f"`{database_name}`.`{table_name}`"
+
+    try:
+        df_to_insert = df.copy()
+        order_by_col_name = ""  # 需要变量来存储【清理后】的排序列名
+
+        if isinstance(df_to_insert.index, pd.DatetimeIndex):
+            index_name = df_to_insert.index.name if df_to_insert.index.name else "timestamp"
+            df_to_insert = df_to_insert.reset_index().rename(columns={index_name: index_name})
+            order_by_col_name = index_name  # 原始排序列名 (例如 '_time')
+        else:
+            order_by_col_name = df_to_insert.columns[0]
+
+        #  ===== 先清理所有列名 =====
+        sanitized_columns = [re.sub(r"\W+", "_", col).strip("_") for col in df_to_insert.columns]
+        df_to_insert.columns = sanitized_columns
+
+        # 我们也清理原始的排序列名，确保它和新列名能对上
+        sanitized_order_by_col = re.sub(r"\W+", "_", order_by_col_name).strip("_")
+        order_by_clause = f"(`{sanitized_order_by_col}`)"
+
+        # 自动生成建表 SQL 模板
+        # 此时 df_to_insert (列名已清理) 和 order_by_clause (也已清理)
+        # 传递给 generate_create_table_sql 时是完全匹配的
+        schema_template = generate_create_table_sql(
+            df_to_insert,
+            full_table_path,
+            engine="MergeTree",
+            order_by=order_by_clause,  # 传入清理后的 "(`time`)"
+        )
+
+        # 调用建表函数
+        if not create_table_if_not_exists(client, database_name, table_name, schema_template):
+            raise Exception("建表失败，请检查错误信息。")
+
+        # 分块插入数据
+        column_names_str = ", ".join([f"`{col}`" for col in df_to_insert.columns])
+        query = f"INSERT INTO {full_table_path} ({column_names_str}) VALUES"
+
+        num_chunks = int(np.ceil(len(df_to_insert) / chunk_size))
+        for i, chunk_df in enumerate(np.array_split(df_to_insert, num_chunks)):
+            data_to_insert = chunk_df.values.tolist()
+            client.execute(query, data_to_insert)
+
+    except Exception as e:
+        print(f"❌  写入 ClickHouse 时发生错误: {e}")
+        raise
+
+
+# ====================================================================
+#   数据预处理 (Preprocessing)
+# ====================================================================
+
+
+def preprocess_timeseries_data(
+    df: pd.DataFrame,
+    resample_freq: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+) -> pd.DataFrame:
+    """
+    对原始时间序列数据进行标准化预处理：重采样、插值、时区转换。
+    """
+    if df.empty:
+        return df
+
+    # 1. 统一时区为 UTC 进行处理
+    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
+
+    # 2. 创建完整时间轴并重采样
+    start_utc = start_time.astimezone(datetime.timezone.utc)
+    end_utc = end_time.astimezone(datetime.timezone.utc)
+    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
+    reindexed_df = df.reindex(full_range)
+
+    # 3. 插值填充：先线性插值，再用前后值填充边缘
+    filled_df = reindexed_df.interpolate(method="linear").ffill().bfill()
+
+    # 4. 转换回本地时区
+    final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
+    final_df.index.name = "_time"
+
+    print(f"  ► 预处理完成。处理后的数据共有 {len(final_df)} 条记录。")
+    return final_df
+
+
+def preprocess_limited_interpolation(
+    df: pd.DataFrame,
+    resample_freq: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+    gap_threshold_hours: float = 2.0,
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
+
+    start_utc = start_time.astimezone(datetime.timezone.utc)
+    # end_time 应该是 "下一个月的第一分钟" 之前，
+    # 否则 date_range(..., end=...) 会漏掉 23:59:00
+    end_utc = end_time.astimezone(datetime.timezone.utc)
+    # 创建一个完整的、从月初到月末的 1 分钟索引
+    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq, inclusive="left")
+    reindexed_df = df.reindex(full_range)
+
+    try:
+        threshold_duration = pd.Timedelta(hours=gap_threshold_hours)
+        resample_duration = pd.Timedelta(resample_freq)
+    except ValueError:
+        raise ValueError(
+            f"无效的 resample_freq: '{resample_freq}'。请使用 'T', 'min', 'H' 等 pandas 频率字符串。"
+        )
+
+    if resample_duration.total_seconds() <= 0:
+        raise ValueError(f"resample_freq '{resample_freq}' 必须是正的时间间隔。")
+
+    # 计算插值的最大连续点数
+    limit_count = int(threshold_duration / resample_duration) - 1
+    if limit_count < 1:
+        print(
+            f"警告: resample_freq ({resample_freq}) 大于或等于门限 ({gap_threshold_hours}h)。将不进行插值。"
+        )
+        limit_count = 0
+
+    interpolated_df = reindexed_df.interpolate(method="linear", limit=limit_count)
+
+    final_df = interpolated_df.dropna()
+    final_df = final_df.tz_convert(config.LOCAL_TIMEZONE)
+    final_df.index.name = "_time"
+
+    print(f"  ► 预处理(有限插值)完成。处理后的数据共有 {len(final_df)} 条记录。")
+    return final_df
+
+
+# ====================================================================
+#   高级工作流 (High-Level Workflows)
+# ====================================================================
+
+
+def process_excel_file(file_path: str, client: Client, rules_config: dict, parse_config: dict):
+    """
+    处理单个传感器数据 Excel 文件：解析、转换并存入 ClickHouse。
+    这是一个高级工作流，组合了文件读取、数据转换和数据库写入。
+    """
     filename = os.path.basename(file_path)
     match = re.match(parse_config["filename_regex"], filename)
     if not match:
         print(f"  文件名 {filename} 不符合规则，跳过。")
         return
 
-    # 提取信息
-    device_id = match.group(1)
-    temple_id = match.group(2)
-    keyword = match.group(3)
+    # 从文件名提取元数据
+    device_id, temple_id, keyword = match.groups()
 
     if keyword not in rules_config:
         print(f"  未找到关键字 '{keyword}' 的映射规则，跳过。")
@@ -359,37 +573,26 @@ def process_excel_file(file_path, client, rules_config, parse_config):
     # 读取 Excel (处理多年份 Sheet)
     try:
         xls = pd.ExcelFile(file_path)
+        header_row = parse_config["excel_reading"]["header_row"]
+        start_year, end_year = parse_config["excel_reading"]["sheet_year_range"]
+        valid_sheets = [
+            s for s in xls.sheet_names if s.isdigit() and start_year <= int(s) <= end_year
+        ]
+
+        if not valid_sheets:
+            print("  未找到任何有效的年份 Sheet，跳过。")
+            return
+
+        df_total = pd.concat(
+            [pd.read_excel(xls, sheet_name=s, header=header_row) for s in valid_sheets],
+            ignore_index=True,
+        )
+
     except Exception as e:
-        print(f"  读取 Excel 文件失败 (可能文件已打开或损坏): {e}")
+        print(f"  读取或合并 Excel 文件失败 (可能文件已打开或损坏): {e}")
         return
 
-    all_sheets_data = []
-    excel_options = parse_config["excel_reading"]
-    header_row = excel_options["header_row"]
-    start_year, end_year = excel_options["sheet_year_range"]
-
-    # 筛选出在年份范围内的所有 Sheet
-    valid_sheet_names = [
-        s for s in xls.sheet_names if s.isdigit() and start_year <= int(s) <= end_year
-    ]
-
-    if not valid_sheet_names:
-        print("  未找到任何有效的年份，跳过。")
-        return
-
-    for sheet_name in valid_sheet_names:
-        try:
-            df_sheet = pd.read_excel(xls, sheet_name=sheet_name, header=header_row)
-            all_sheets_data.append(df_sheet)
-        except Exception as e:
-            print(f"    读取 Sheet '{sheet_name}' 失败: {e}")
-
-    if not all_sheets_data:
-        print("  所有 Sheet 读取失败，未获取任何数据。")
-        return
-
-    # 合并、处理数据
-    df_total = pd.concat(all_sheets_data, ignore_index=True)
+    # 数据清洗和转换
     df_total.rename(columns=column_map, inplace=True)
     final_db_columns = list(column_map.values())
     df_to_insert = df_total[final_db_columns].copy()
@@ -397,26 +600,23 @@ def process_excel_file(file_path, client, rules_config, parse_config):
     df_to_insert["device_id"] = device_id
     df_to_insert["temple_id"] = temple_id
     df_to_insert["created_at"] = datetime.datetime.now()
-
     df_to_insert["time"] = pd.to_datetime(df_to_insert["time"], errors="coerce")
-    df_to_insert.dropna(subset=["time"], inplace=True)
 
-    # 将数值列转为
     for col in final_db_columns:
         if col != "time":
             df_to_insert[col] = pd.to_numeric(df_to_insert[col], errors="coerce")
 
-    # 删除任何包含空值(NaN)的行，因为 ClickHouse FLOAT 不接受 NaN
     df_to_insert.dropna(inplace=True)
     if df_to_insert.empty:
         print("  处理后数据为空 (可能所有行都有无效的时间或值)，跳过。")
         return
 
+    # 准备数据以插入 ClickHouse
     try:
         full_table_name = f"{config.CLICKHOUSE_SHARED_DB}.{target_table}"
-        # 转换数据为列表 (clickhouse-driver 推荐方式)
-        # 必须确保 DataFrame 的列顺序与 ClickHouse 表一致
         co2_table_name = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"]["clickhouse_table"]
+
+        # 确保列顺序与数据库表一致
         if target_table == co2_table_name:
             final_columns_order = [
                 "temple_id",
@@ -426,7 +626,7 @@ def process_excel_file(file_path, client, rules_config, parse_config):
                 "co2_corrected",
                 "created_at",
             ]
-        else:  # RAW_TABLE_TEMP_HUMIDITY
+        else:
             final_columns_order = [
                 "temple_id",
                 "device_id",
@@ -439,297 +639,8 @@ def process_excel_file(file_path, client, rules_config, parse_config):
         df_to_insert = df_to_insert[final_columns_order]
         data_to_insert = df_to_insert.values.tolist()
 
-        insert_query = f"INSERT INTO {full_table_name} VALUES"
-
-        # client.execute 会自动处理批量插入
-        client.execute(insert_query, data_to_insert)
-
+        client.execute(f"INSERT INTO {full_table_name} VALUES", data_to_insert)
         print(f"  成功! 插入 {len(data_to_insert)} 行数据到 {full_table_name}。")
 
     except Exception as e:
         print(f"  插入数据到 ClickHouse 失败: {e}")
-
-
-# def _create_table_if_not_exists(client: Client, db_name: str, table_name: str):
-#     """
-#     创建特征数据表（如果不存在）。
-#     """
-
-#     client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-#     create_table_query = f"""
-#     CREATE TABLE IF NOT EXISTS {db_name}.`{table_name}`
-#     (
-#         `stat_id`            BIGINT,
-#         `temple_id`          FixedString(20),
-#         `device_id`          FixedString(30),
-#         `stats_start_time`   DateTime,
-#         `monitored_variable` FixedString(20),
-#         `stats_cycle`        FixedString(10),
-#         `feature_key`        FixedString(30),
-#         `feature_value`      FixedString(30),
-#         `standby_field01`    FixedString(30),
-#         `created_at`         DateTime
-#     ) ENGINE = MergeTree()
-#     ORDER BY (stats_start_time, device_id, feature_key)
-#     """
-#     client.execute(create_table_query)
-#     print(f"表 {db_name}.`{table_name}` 检查/创建完毕 。")
-
-
-def create_table_if_not_exists(client, db_name, table_name, schema_template):
-    """
-    - client: 数据库连接
-    - db_name: 数据库名 (例如 'original_data')
-    - table_name: 要创建的表名
-    - schema_template: 包含 {db_name} 和 {table_name} 占位符的 SQL 字符串
-                      (这个模板将从 src.table_definitions 传入)
-    """
-    try:
-        # 1. 确保数据库存在
-        client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-        # 2. 格式化 SQL 模板
-        #    使用 .format() 方法动态替换占位符
-        create_table_query = schema_template.format(db_name=db_name, table_name=table_name)
-        # 3. 执行建表
-        client.execute(create_table_query)
-        print(f"表 {db_name}.`{table_name}` 检查/创建 成功。")
-        return True
-
-    except Exception as e:
-        print(f"错误: 创建表 {db_name}.`{table_name}` 失败: {e}")
-        print("失败的SQL查询:\n", create_table_query)
-        return False
-
-
-# 通用的 Excel 转 pd
-def read_excel_data(file_path, sheet_name=0, header_row=0, dtypes=None):
-    """
-    通用的 Excel 读取函数。
-    - file_path: 文件路径
-    - sheet_name: 表单名 (默认为第一个)
-    - header_row: 标题行 (0 是第一行)
-    """
-    try:
-        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, dtype=dtypes)
-        # 删除所有列都为空的行
-        df_cleaned = df.dropna(how="all")
-        return df_cleaned
-    except FileNotFoundError:
-        print(f"错误: 找不到文件 {file_path}")
-    except Exception as e:
-        print(f"错误: 读取 Excel 文件 {file_path} 失败: {e}")
-
-    return pd.DataFrame()
-
-
-def load_to_clickhouse(client, df, table_name):
-    """
-    通用的 ClickHouse 加载函数。
-    它会根据 DataFrame 的列名自动插入数据。
-    """
-    if df.empty:
-        print(f"数据为空，跳过插入表 '{table_name}'")
-        return False
-
-    data_to_insert = df.to_dict("records")
-
-    # 构造插入语句
-    column_names = ", ".join([f"`{col}`" for col in df.columns])  # 使用反引号 ` ` 保证字段名正确
-    query = f"INSERT INTO {table_name} ({column_names}) VALUES"
-
-    try:
-        client.execute(query, data_to_insert)
-        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
-        return True
-    except Exception as e:
-        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
-        if data_to_insert:
-            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
-        return False
-
-
-# def store_dataframe_to_clickhouse(
-#     df: pd.DataFrame,
-#     table_name: str,
-#     target: str = "shared",
-#     chunk_size: int = 500000,
-# ):
-#     """
-#     将 DataFrame 存储到 ClickHouse (使用 clickhouse-driver TCP 协议)。
-#     用到注释后的函数，需要修改
-#     """
-#     if df.empty:
-#         print("\n数据为空，跳过存储。")
-#         return
-
-#     if target == "shared":
-#         host = config.CLICKHOUSE_SHARED_HOST
-#         port = config.CLICKHOUSE_SHARED_PORT
-#         user = config.CLICKHOUSE_SHARED_USER
-#         password = config.CLICKHOUSE_SHARED_PASSWORD
-#         database = config.CLICKHOUSE_SHARED_DB
-#     else:
-#         raise ValueError(f"未知的 ClickHouse 目标: {target}")
-
-#     full_table_name = f"{database}.{table_name}"
-#     print(f"准备连接到 {host}:{port}，存入 {full_table_name}...")
-
-#     df_to_insert = df.copy()
-#     df_to_insert.reset_index(inplace=True)
-#     if config.FIELD_NAME not in df_to_insert.columns:
-#         raise KeyError(f"DataFrame 中找不到值列: '{config.FIELD_NAME}'")
-#     if "_time" not in df_to_insert.columns:
-#         raise KeyError("DataFrame 中找不到时间列: '_time' (请检查 reset_index)")
-
-#     df_to_insert.rename(
-#         columns={"_time": "stats_start_time", config.FIELD_NAME: "feature_value"},
-#         inplace=True,
-#     )
-#     # 填充列
-#     start_int_id = int(datetime.datetime.now().timestamp() * 1_000_000)
-#     df_to_insert["stat_id"] = range(start_int_id, start_int_id + len(df_to_insert))
-#     df_to_insert["temple_id"] = config.TEMPLE_ID
-#     df_to_insert["device_id"] = config.DEVICE_ID
-#     df_to_insert["created_at"] = datetime.datetime.now()
-
-#     final_columns = [
-#         "stat_id",
-#         "temple_id",
-#         "device_id",
-#         "stats_start_time",
-#         "monitored_variable",
-#         "stats_cycle",
-#         "feature_key",
-#         "feature_value",
-#         "standby_field01",
-#         "created_at",
-#     ]
-
-#     # 检查是否有缺失的列
-#     missing_cols = set(final_columns) - set(df_to_insert.columns)
-#     if missing_cols:
-#         print(f"警告: DataFrame 中缺少以下列: {missing_cols}")
-#         # 补全缺失的列为空值，防止插入失败
-#         for col in missing_cols:
-#             df_to_insert[col] = ""  # 假设 CHAR 类型可以接受空字符串
-
-#     df_to_insert = df_to_insert[final_columns]
-
-#     try:
-#         client = Client(host=host, port=port, user=user, password=password, database="default")
-#         print("连接成功。")
-#         _create_table_if_not_exists(client, database, table_name)
-#         # 准备 INSERT 语句
-#         insert_query = f"INSERT INTO {full_table_name} VALUES"
-#         # 转换数据 (使用 .values.tolist() 兼容性好)
-#         data_to_insert = df_to_insert.values.tolist()
-#         total_rows = len(data_to_insert)
-#         chunk_size = int(chunk_size)
-#         for i in range(0, total_rows, chunk_size):
-#             chunk = data_to_insert[i : i + chunk_size]
-#             client.execute(insert_query, chunk)
-
-#         print(f"成功插入 {total_rows} 行数据到 {full_table_name}。")
-
-#     except Exception as e:
-#         print(f"存储到 ClickHouse 失败: {e}")
-#         raise e
-
-
-## 预处理
-def preprocess_timeseries_data(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-) -> pd.DataFrame:
-    """
-    对原始时间序列数据进行标准化预处理：
-    1. 确保时间索引是UTC时区。
-    2. 按照指定频率和起止时间，创建完整的、连续的时间轴。
-    3. 优先使用线性插值 (interpolate) 填充内部缺失值，
-       然后使用 ffill 和 bfill 填充边缘（开头和结尾）的缺失值。
-    4. 将最终的时间索引转换为本地时区（东八区）。
-    """
-    if df.empty:
-        return df
-
-    if df.index.tz is None:
-        df = df.tz_localize("UTC")
-    else:
-        df = df.tz_convert("UTC")
-
-    # 确保 start_time 和 end_time 也是 UTC
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
-    reindexed_df = df.reindex(full_range)
-
-    #    使用线性插值填充所有 "内部" 的 NaNs
-    interpolated_df = reindexed_df.interpolate(method="linear")
-
-    #    使用 ffill 和 bfill 填充可能残留在
-    filled_df = interpolated_df.ffill().bfill()
-
-    final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 处理完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
-
-
-def preprocess_limited_interpolation(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    gap_threshold_hours: float = 2.0,
-) -> pd.DataFrame:
-    """
-    对时间序列数据进行预处理，并仅对短于门限的空缺进行线性插值。
-
-    1. 确保时间索引是UTC时区。
-    2. 按照指定频率和起止时间，创建完整的、连续的时间轴。
-    3. 仅对 (gap_threshold_hours) 或更短的连续缺失值执行线性插值。
-    4. 较长的缺失值将保留为 NaNs。
-    """
-    if df.empty:
-        return df
-
-    if df.index.tz is None:
-        df = df.tz_localize("UTC")
-    else:
-        df = df.tz_convert("UTC")
-
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
-    reindexed_df = df.reindex(full_range)
-
-    try:
-        threshold_duration = pd.Timedelta(hours=gap_threshold_hours)
-        resample_duration = pd.Timedelta(resample_freq)
-    except ValueError:
-        raise ValueError(
-            f"无效的 resample_freq: '{resample_freq}'。请使用 '1T', '5min', '1H' 等。"
-        )
-
-    if resample_duration.total_seconds() <= 0:
-        raise ValueError(f"resample_freq '{resample_freq}' 必须是正的时间间隔。")
-
-    limit_count = int(threshold_duration / resample_duration) - 1
-
-    if limit_count < 1:
-        print(
-            f"警告: resample_freq ({resample_freq}) 大于或等于门限 ({gap_threshold_hours}h)。将不进行插值。"
-        )
-        limit_count = 0
-
-    interpolated_df = reindexed_df.interpolate(method="linear", limit=limit_count)
-    final_df = interpolated_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 预处理(有限插值)完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
