@@ -5,7 +5,7 @@ from clickhouse_driver import Client
 import pandas as pd
 
 from src import config
-from src.dataset import get_clickhouse_client
+from src.io import get_clickhouse_client
 
 try:
     DB = config.CLICKHOUSE_SHARED_DB

@@ -2,12 +2,11 @@ import datetime
 import os
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 from tsfresh import extract_features
 from tsfresh.feature_extraction import ComprehensiveFCParameters
 
 from src import config
-from src.dataset import get_timeseries_data
+from src.io import get_timeseries_data
 
 
 def main():
