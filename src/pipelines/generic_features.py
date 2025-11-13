@@ -12,9 +12,7 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None):
 
     Args:
         config (dict): 包含所有数据库和特征参数的配置字典。
-        id_limit (int, optional):
-            【用于测试】如果设置此值 (例如 3),
-            则只处理前 3 个 ID，而不是全部。
+        id_limit (int, optional):。
     """
 
     # 拆分配置字典以便调用
@@ -37,17 +35,15 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None):
         )
 
         if not all_device_ids:
-            print("❌ 未在源表中找到任何 ID，流水线终止。")
+            print("未在源表中找到任何 ID，流水线终止。")
             return
 
-        # 3. ‼️ 处理你的【测试】需求
+        # 3. 【测试】
         if id_limit:
-            print(f"⚠️ 触发【测试模式】，仅处理前 {id_limit} 个 ID。")
+            print(f"【测试模式】，仅处理前 {id_limit} 个 ID。")
             all_device_ids = all_device_ids[:id_limit]
 
-        print(f"🌍 找到 {len(all_device_ids)} 个 ID。开始循环处理...")
-
-        start_time = time.time()
+        # start_time = time.time()
 
         # 4. [Loop] 循环遍历每个 ID
         for i, device_id in enumerate(all_device_ids):
@@ -86,17 +82,16 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None):
                 client=client,
                 db=load_config["database"],
                 table=load_config["table"],
-                temple_id=load_config["temple_id"],  # 假设 temple_id 是批次-元数据
                 stats_cycle=load_config["stats_cycle"],
             )
             print(f"   ► (ID: {device_id}) 处理和存储完毕。")
 
-        end_time = time.time()
-        print(f"\n🎉 流水线执行完毕！总耗时: {end_time - start_time:.2f} 秒。")
+        # end_time = time.time()
+        # print(f"\n🎉 流水线执行完毕！总耗时: {end_time - start_time:.2f} 秒。")
 
     except Exception as e:
         print(f"\n❌ 流水线发生致命错误: {e}")
     finally:
         if client and client.connection:
             client.disconnect()
-            print("\n✅ ClickHouse 连接已关闭。")
+            print("\n ClickHouse 连接已关闭。")

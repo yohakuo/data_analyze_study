@@ -18,7 +18,7 @@ except AttributeError as e:
 try:
     try:
         client = get_clickhouse_client(target="shared")
-
+        DB = "default"
     except Exception:
         try:
             client = get_clickhouse_client(target="default")

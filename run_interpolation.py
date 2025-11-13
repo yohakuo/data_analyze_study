@@ -21,7 +21,7 @@ def main():
 
     SOURCE_DB = "original_data"
     SOURCE_TABLE = "sensor_temp_humidity"
-    TARGET_DB = "original_data_processed"
+    TARGET_DB = "original_data_interpolated"
     TARGET_TABLE = "sensor_temp_humidity_interpolated"
     LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -67,12 +67,17 @@ def main():
         if raw_df_monthly.empty:
             print("  ► 该月没有数据，跳过。")
             continue
+        if "temple_id" not in raw_df_monthly.columns:
+            print(f"❌ 错误：源表 {SOURCE_DB}.{SOURCE_TABLE} 中缺少 'temple_id' 列。")
+            print(f"   ► 找到的列: {raw_df_monthly.columns.tolist()}")
+            break  # 终止整个脚本
 
         # print("DEBUG: DataFrame 的索引 (Index):", raw_df_monthly.index)
         # c. 预处理 (Preprocess) - 只对当月数据进行插值
         raw_df_monthly = raw_df_monthly.set_index("time")
         processed_devices = []
         for device_id, device_df in raw_df_monthly.groupby("device_id"):
+            temple_id = device_df["temple_id"].iloc[0]
             device_df_resampled = device_df.resample("1min").mean(numeric_only=True)
             interpolated_df = preprocess_limited_interpolation(
                 device_df_resampled,  # 传入重采样后的数据
@@ -83,6 +88,7 @@ def main():
             )
             if not interpolated_df.empty:
                 interpolated_df["device_id"] = device_id
+                interpolated_df["temple_id"] = temple_id
                 processed_devices.append(interpolated_df)
         if not processed_devices:
             print("   ► 该月所有设备数据处理后为空，跳过。")

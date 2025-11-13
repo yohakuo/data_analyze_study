@@ -15,7 +15,7 @@ def get_distinct_ids(client: Client, db: str, table: str, id_column: str = "devi
     [E] 从源表获取所有唯一的 ID 列表。
     这是管线(Pipeline)的第一步。
     """
-    print(f"   ► [E] 正在从 {db}.{table} 查询所有唯一的 '{id_column}'...")
+
     query = f"SELECT DISTINCT `{id_column}` FROM `{db}`.`{table}`"
     try:
         result = client.execute(query)
@@ -68,34 +68,59 @@ def load_features_to_clickhouse(
     client: Client,
     db: str,
     table: str,
-    # (元数据)
-    temple_id: str,  # 假设
     stats_cycle: str,
 ):
     """
     [L] 加载包装器：
-    1. 为特征数据添加【批次】元数据。
-    2. 调用你【已有的】 store_dataframe_to_clickhouse 函数。
+    1. 添加元数据。
+    2. 重命名列以匹配目标表（图一）。
+    3. 调用 store_dataframe_to_clickhouse。
     """
     if features_df.empty:
         print("   ► [L] 特征数据为空，跳过存储。")
         return
 
-    # 1. 添加元数据
-    # (注意： 'device_id', 'time', 'field_name', 'feature_key', 'value'
-    #  应该已在 Transform 步骤中生成)
-    features_df["temple_id"] = temple_id
-    features_df["stats_cycle"] = stats_cycle
+    # 复制一份以避免 SettingWithCopyWarning
+    df_to_load = features_df.copy()
 
-    # 2. 调用真正的存储函数
+    # 1. 添加元数据
+    df_to_load["stats_cycle"] = stats_cycle
+    df_to_load["created_at"] = datetime.datetime.now(datetime.timezone.utc)
+
+    # 2. 定义列名映射
+    COLUMN_MAP = {
+        "time": "stats_start_time",
+        "field_name": "monitored_variable",
+        "value": "feature_value",
+    }
+
+    df_to_load.rename(columns=COLUMN_MAP, inplace=True)
+
+    # 3. 确保数据类型匹配目标表
+    df_to_load["feature_value"] = df_to_load["feature_value"].astype(str)
+
+    # 4. (可选) 确保只包含目标表中的列
+    #    (注意: stat_id 和 standby_field01 应由数据库处理)
+    FINAL_COLUMNS = [
+        "temple_id",
+        "device_id",
+        "stats_start_time",
+        "monitored_variable",
+        "stats_cycle",
+        "feature_key",
+        "feature_value",
+        "created_at",
+    ]
+
+    # 筛选出最终的列
+    final_df = df_to_load[FINAL_COLUMNS]
+
     try:
-        # ‼️ 这是对你 dataset.py 中函数的【复用】
         store_dataframe_to_clickhouse(
-            df=features_df,
+            df=final_df,  # 传入重命名和清理后的 DataFrame
             client=client,
             database_name=db,
             table_name=table,
         )
-        # print(f"   ► [L] 成功调用存储函数存入 {len(features_df)} 行。")
     except Exception as e:
         print(f"❌ [L] 存储失败: {e}")

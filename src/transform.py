@@ -19,17 +19,22 @@ def transform_device_data(
 
     try:
         device_df_indexed = device_df.set_index("time")
+
+        # 同时提取 device_id 和 temple_id
         device_id = device_df["device_id"].iloc[0]
+        if "temple_id" not in device_df.columns:
+            print("❌ [T] 转换失败：数据中缺少 'temple_id' 列。")
+            return pd.DataFrame()
+        temple_id = device_df["temple_id"].iloc[0]
     except KeyError as e:
         print(f"❌ [T] 转换失败：数据中缺少 'time' 或 'device_id' 列。{e}")
         return pd.DataFrame()
-
     # 循环处理每个【字段】(e.g., 'humidity', 'temperature')
     for field_name in fields_to_process:
         # -----------------------------------------------------------------
         # 2. 调用 (Call)
         # -----------------------------------------------------------------
-        # ‼️ 在这里，你【调用】了从 statistica.py 导入的函数
+        # ‼️ 在这里，【调用】了从 statistica.py 导入的函数
         # -----------------------------------------------------------------
         wide_df = _calculate_single_field_features(
             device_df_indexed, field_name=field_name, feature_list=features_to_calc, freq=freq
@@ -44,6 +49,7 @@ def transform_device_data(
         )
         long_df["device_id"] = device_id
         long_df["field_name"] = field_name
+        long_df["temple_id"] = temple_id
         all_features_list.append(long_df)
 
     if not all_features_list:
