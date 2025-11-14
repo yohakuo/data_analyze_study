@@ -1,13 +1,9 @@
 import datetime
 import os
-import re
 import warnings
 
-from clickhouse_driver import Client
-import pandas as pd
-
 from src import config
-from src.dataset import _create_raw_tables_if_not_exists, get_clickhouse_client, process_excel_file
+from src.io import _create_raw_tables_if_not_exists, get_clickhouse_client, process_excel_file
 
 warnings.filterwarnings(
     "ignore", category=UserWarning, message="Workbook contains no default style"

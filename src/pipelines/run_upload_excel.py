@@ -2,7 +2,7 @@
 import pandas as pd
 
 import src.config as config
-from src.dataset import (
+from src.io import (
     create_table_if_not_exists,
     get_clickhouse_client,
     load_to_clickhouse,

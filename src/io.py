@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 与数据库连接、数据读写、预处理相关的核心函数。
 """
@@ -204,29 +203,6 @@ def get_global_time_range(
         raise
 
 
-def load_to_clickhouse(client: Client, df: pd.DataFrame, table_name: str) -> bool:
-    """
-    通用的 ClickHouse 数据加载函数，根据 DataFrame 的列名自动插入。
-    """
-    if df.empty:
-        print(f"数据为空，跳过插入表 '{table_name}'")
-        return False
-
-    try:
-        data_to_insert = df.to_dict("records")
-        # 构造插入语句，使用反引号 ` ` 保证字段名正确
-        column_names = ", ".join([f"`{col}`" for col in df.columns])
-        query = f"INSERT INTO {table_name} ({column_names}) VALUES"
-        client.execute(query, data_to_insert)
-        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
-        return True
-    except Exception as e:
-        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
-        if data_to_insert:
-            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
-        return False
-
-
 def import_csv_to_influx(csv_filepath: str):
     """
     读取指定的 CSV 文件，并将其内容批量导入到 InfluxDB。
@@ -285,59 +261,6 @@ def import_csv_to_influx(csv_filepath: str):
             print(f"错误：读取或写入文件 '{csv_filepath}' 时发生严重错误: {e}")
 
 
-def get_data_from_clickhouse(
-    client: Client,
-    table_name: str,
-    field_name: str,
-    start_time: datetime.datetime = None,
-    end_time: datetime.datetime = None,
-) -> pd.DataFrame:
-    """
-    从 ClickHouse 的【特征长表】中，提取指定字段的数据。
-    如果提供了时间范围，则按范围提取；否则，提取【全部】数据。
-    """
-    print(f"  ► 正在从 ClickHouse 的表 '{table_name}' 中提取 '{field_name}' 的数据...")
-
-    where_conditions = [
-        "monitored_variable = %(field_name)s",
-        "feature_key = '均值'",  # 假设我们总是基于“均值”进行插值
-    ]
-    params = {"field_name": field_name}
-
-    if start_time:
-        where_conditions.append("stats_start_time >= %(start)s")
-        params["start"] = start_time.astimezone(datetime.timezone.utc)
-
-    if end_time:
-        where_conditions.append("stats_start_time <= %(end)s")
-        params["end"] = end_time.astimezone(datetime.timezone.utc)
-
-    where_clause = " AND ".join(where_conditions)
-
-    query = f"""
-    SELECT stats_start_time, feature_value
-    FROM {config.DATABASE_NAME}.`{table_name}`
-    WHERE {where_clause}
-    ORDER BY stats_start_time
-    """
-
-    df = client.query_df(query, parameters=params)
-
-    if df.empty:
-        print(f"  ► 警告：在 ClickHouse 表 '{table_name}' 中未找到数据。")
-        return pd.DataFrame()
-
-    # --- 数据预处理 ---
-    df["stats_start_time"] = pd.to_datetime(df["stats_start_time"]).dt.tz_localize("UTC")
-    df = df.set_index("stats_start_time")
-    df["feature_value"] = pd.to_numeric(df["feature_value"], errors="coerce")
-    df.rename(columns={"feature_value": field_name}, inplace=True)
-    df = df.dropna()
-
-    print(f"  ► 成功从 ClickHouse 提取了 {len(df)} 行数据。")
-    return df
-
-
 def get_full_table_from_clickhouse(
     client: Client,
     database_name: str,
@@ -394,6 +317,77 @@ def get_full_table_from_clickhouse(
     except Exception as e:
         print(f"❌  从 {full_table_path} 提取数据时出错: {e}")
         raise
+
+
+def get_data_from_clickhouse(
+    client: Client,
+    database_name: str,
+    table_name: str,
+    temple_id: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+) -> pd.DataFrame:
+    """
+    按【时间范围】和【temple_id】从 ClickHouse 提取数据。
+    """
+
+    full_table_path = f"`{database_name}`.`{table_name}`"
+    where_conditions = []
+    params = {}
+    time_col = "time"
+
+    # 1. 时间范围筛选
+    where_conditions.append(f"`{time_col}` >= %(start)s")
+    params["start"] = start_time.astimezone(datetime.timezone.utc)
+    where_conditions.append(f"`{time_col}` < %(end)s")
+    params["end"] = end_time.astimezone(datetime.timezone.utc)
+
+    # 2. 窟号 (Temple ID) 筛选
+    where_conditions.append("`temple_id` = %(temple)s")  # 假设列名为 'temple_id'
+    params["temple"] = temple_id
+
+    where_clause = "WHERE " + " AND ".join(where_conditions)
+
+    # 3. 查询
+    # 我们需要 'time', 'device_id' 以及所有数值列 (如 humidity, temperature)
+    query = f"SELECT * FROM {full_table_path} {where_clause} ORDER BY `device_id`, `{time_col}`"
+
+    try:
+        df = client.query_dataframe(query, params=params)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # 确保 time 列是带时区的 datetime 对象
+        df[time_col] = pd.to_datetime(df[time_col], utc=True)
+        return df
+
+    except Exception as e:
+        print(f"❌ ClickHouse 查询失败: {e}")
+        return pd.DataFrame()
+
+
+def load_to_clickhouse(client: Client, df: pd.DataFrame, table_name: str) -> bool:
+    """
+    通用的 ClickHouse 数据加载函数，根据 DataFrame 的列名自动插入。
+    """
+    if df.empty:
+        print(f"数据为空，跳过插入表 '{table_name}'")
+        return False
+
+    try:
+        data_to_insert = df.to_dict("records")
+        # 构造插入语句，使用反引号 ` ` 保证字段名正确
+        column_names = ", ".join([f"`{col}`" for col in df.columns])
+        query = f"INSERT INTO {table_name} ({column_names}) VALUES"
+        client.execute(query, data_to_insert)
+        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
+        return True
+    except Exception as e:
+        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
+        if data_to_insert:
+            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
+        return False
 
 
 def store_dataframe_to_clickhouse(
@@ -456,93 +450,7 @@ def store_dataframe_to_clickhouse(
 
 
 # ====================================================================
-#   数据预处理 (Preprocessing)
-# ====================================================================
-
-
-def preprocess_timeseries_data(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-) -> pd.DataFrame:
-    """
-    对原始时间序列数据进行标准化预处理：重采样、插值、时区转换。
-    """
-    if df.empty:
-        return df
-
-    # 1. 统一时区为 UTC 进行处理
-    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
-
-    # 2. 创建完整时间轴并重采样
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
-    reindexed_df = df.reindex(full_range)
-
-    # 3. 插值填充：先线性插值，再用前后值填充边缘
-    filled_df = reindexed_df.interpolate(method="linear").ffill().bfill()
-
-    # 4. 转换回本地时区
-    final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 预处理完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
-
-
-def preprocess_limited_interpolation(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    gap_threshold_hours: float = 2.0,
-) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
-
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    # end_time 应该是 "下一个月的第一分钟" 之前，
-    # 否则 date_range(..., end=...) 会漏掉 23:59:00
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-    # 创建一个完整的、从月初到月末的 1 分钟索引
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq, inclusive="left")
-    reindexed_df = df.reindex(full_range)
-
-    try:
-        threshold_duration = pd.Timedelta(hours=gap_threshold_hours)
-        resample_duration = pd.Timedelta(resample_freq)
-    except ValueError:
-        raise ValueError(
-            f"无效的 resample_freq: '{resample_freq}'。请使用 'T', 'min', 'H' 等 pandas 频率字符串。"
-        )
-
-    if resample_duration.total_seconds() <= 0:
-        raise ValueError(f"resample_freq '{resample_freq}' 必须是正的时间间隔。")
-
-    # 计算插值的最大连续点数
-    limit_count = int(threshold_duration / resample_duration) - 1
-    if limit_count < 1:
-        print(
-            f"警告: resample_freq ({resample_freq}) 大于或等于门限 ({gap_threshold_hours}h)。将不进行插值。"
-        )
-        limit_count = 0
-
-    interpolated_df = reindexed_df.interpolate(method="linear", limit=limit_count)
-
-    final_df = interpolated_df.dropna()
-    final_df = final_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 预处理(有限插值)完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
-
-
-# ====================================================================
-#   高级工作流 (High-Level Workflows)
+#   高级工作流
 # ====================================================================
 
 
