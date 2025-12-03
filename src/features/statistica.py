@@ -31,7 +31,7 @@ FEATURE_CALCULATORS = {
 }
 
 
-@timing_decorator
+# @timing_decorator
 def calculate_features(
     df: pd.DataFrame, field_name: str, feature_list: list, freq: str = "h"
 ) -> pd.DataFrame:
@@ -42,10 +42,6 @@ def calculate_features(
     if df.empty or field_name not in df.columns:
         print(f"错误：数据为空或找不到指定的字段 '{field_name}'")
         return pd.DataFrame()
-
-    print(
-        f"\n正在为字段 '{field_name}' 以 '{freq}' 的频率计算指定的 {len(feature_list)} 个特征..."
-    )
 
     agg_functions = {
         feature: FEATURE_CALCULATORS[feature]

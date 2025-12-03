@@ -6,12 +6,13 @@ from src.io_tasks import get_data_for_id, get_distinct_ids, load_features_to_cli
 from src.transform import transform_device_data
 
 
-def run_generic_feature_pipeline(config: dict, id_limit: int = None):
+def run_generic_feature_pipeline(config: dict, id_limit: int = None, specific_ids: list = None):
     """
     按 ID 循环，执行 E-T-L 流程。
 
     Args:
-        config (dict): 包含所有数据库和特征参数的配置字典。
+        config (dict): 包含所有数据库和特征参数的配置字典.
+        specific_ids (list, optional):如果不为空，则只计算列表里的 ID，不再去数据库查全量 ID。
         id_limit (int, optional):。
     """
 
@@ -27,12 +28,15 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None):
         client = get_clickhouse_client(target=db_config["target"])
 
         # 2. [E] 获取所有唯一的 ID
-        all_device_ids = get_distinct_ids(
-            client=client,
-            db=extract_config["database"],
-            table=extract_config["table"],
-            id_column=extract_config["id_column"],
-        )
+        if specific_ids:
+            all_device_ids = specific_ids
+        else:
+            all_device_ids = get_distinct_ids(
+                client=client,
+                db=extract_config["database"],
+                table=extract_config["table"],
+                id_column=extract_config["id_column"],
+            )
 
         if not all_device_ids:
             print("未在源表中找到任何 ID，流水线终止。")
@@ -47,7 +51,7 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None):
 
         # 4. [Loop] 循环遍历每个 ID
         for i, device_id in enumerate(all_device_ids):
-            print(f"\n--- 正在处理 {i + 1}/{len(all_device_ids)}: (ID: {device_id}) ---")
+            # print(f"\n--- 正在处理 {i + 1}/{len(all_device_ids)}: (ID: {device_id}) ---")
 
             # 5. [E] 提取该 ID 的【全部】数据
             raw_df = get_data_for_id(
