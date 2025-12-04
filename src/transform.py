@@ -56,4 +56,8 @@ def transform_device_data(
         return pd.DataFrame()
 
     final_df = pd.concat(all_features_list)
+    # 解决入库后时间后移8小时的问题
+    final_df = final_df.reset_index()
+    final_df["time"] = final_df["time"].dt.tz_localize(None)
+
     return final_df.dropna(subset=["value"])

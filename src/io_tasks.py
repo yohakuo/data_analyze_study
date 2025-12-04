@@ -4,7 +4,6 @@ import datetime
 from clickhouse_driver import Client
 import pandas as pd
 
-# ‼️ 导入你【已有的】底层函数
 from src.io import store_dataframe_to_clickhouse
 
 # --- [E] 提取模块 ---
@@ -20,7 +19,7 @@ def get_distinct_ids(client: Client, db: str, table: str, id_column: str = "devi
     try:
         result = client.execute(query)
         id_list = [row[0] for row in result if row and row[0] is not None]
-        print(f"   ► [E] 找到了 {len(id_list)} 个唯一的 ID。")
+        # print(f"   ► [E] 找到了 {len(id_list)} 个唯一的 ID。")
         return id_list
     except Exception as e:
         print(f"❌ [E] 查询 distinct ID 失败: {e}")
