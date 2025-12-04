@@ -1,8 +1,12 @@
 import time
 from zoneinfo import ZoneInfo
 
-from src.io import get_clickhouse_client
-from src.io_tasks import get_data_for_id, get_distinct_ids, load_features_to_clickhouse
+from src.io import (
+    get_clickhouse_client,
+    get_data_for_id,
+    get_distinct_ids,
+    load_features_to_clickhouse,
+)
 from src.transform import transform_device_data
 
 
