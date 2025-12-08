@@ -34,7 +34,7 @@ class FeatureCalculator:
     Example:
         >>> calculator = FeatureCalculator()
         >>> df = pd.DataFrame(...)  # Time series data with DatetimeIndex
-        >>> stats = calculator.calculate_statistical_features(
+        >>> stats = calculator.calculate_statis  tical_features(
         ...     df, "temperature", ["均值", "最大值"], freq="h"
         ... )
     """
@@ -48,39 +48,16 @@ class FeatureCalculator:
         aggregations (mean, max, min) and custom calculations (percent above Q3).
         """
         self._feature_calculators: dict[str, str | Callable] = {
-            "均值": "mean",
-            "中位数": "median",
-            "最大值": "max",
-            "最小值": "min",
-            "标准差": "std",
-            "Q1": lambda x: x.quantile(0.25),
-            "Q3": lambda x: x.quantile(0.75),
-            "P10": lambda x: x.quantile(0.10),
+            "均值": self._calculate_mean,
+            "中位数": self._calculate_median,
+            "最大值": self._calculate_max,
+            "最小值": self._calculate_min,
+            "标准差": self._calculate_std,
+            "Q1": self._calculate_q1,
+            "Q3": self._calculate_q3,
+            "P10": self._calculate_p10,
             "超过Q3占时比": self._calculate_percent_above_q3,
         }
-
-    def _calculate_percent_above_q3(self, series: pd.Series) -> float:
-        """
-        Calculate the percentage of values above the third quartile (Q3).
-
-        Args:
-            series: Time series data
-
-        Returns:
-            Percentage of values above Q3 (between 0.0 and 1.0)
-
-        Note:
-            Returns 0.0 if series has fewer than 4 points or if Q3 equals max.
-        """
-        if len(series) < 4:
-            return 0.0
-        q3 = series.quantile(0.75)
-        # Avoid case where Q3 equals max value (no values can be above Q3)
-        if q3 == series.max():
-            return 0.0
-        count_above_q3 = (series > q3).sum()
-        percent_above_q3 = count_above_q3 / len(series)
-        return percent_above_q3
 
     def calculate_statistical_features(
         self, df: pd.DataFrame, field_name: str, feature_list: list[str], freq: str = "h"
@@ -327,45 +304,6 @@ class FeatureCalculator:
         )
         return daily_stats
 
-    def _mad_from_mean(self, series: pd.Series) -> float:
-        """
-        Calculate mean absolute deviation from mean.
-
-        Args:
-            series: Time series data
-
-        Returns:
-            Mean absolute deviation from the series mean
-        """
-        return (series - series.mean()).abs().mean()
-
-    def _mad_from_median(self, series: pd.Series) -> float:
-        """
-        Calculate mean absolute deviation from median.
-
-        Args:
-            series: Time series data
-
-        Returns:
-            Mean absolute deviation from the series median
-        """
-        return (series - series.median()).abs().mean()
-
-    def _autocorr_lag1(self, series: pd.Series) -> float | None:
-        """
-        Calculate first-order autocorrelation.
-
-        Args:
-            series: Time series data
-
-        Returns:
-            First-order autocorrelation coefficient, or None if series
-            has fewer than 2 data points
-        """
-        if len(series) < 2:
-            return None
-        return series.autocorr(lag=1)
-
     def find_stable_period(
         self, volatility_df: pd.DataFrame, threshold: float
     ) -> tuple[date | None, date | None, int]:
@@ -484,3 +422,164 @@ class FeatureCalculator:
         )
 
         return recalculated_features
+
+    # ====================================================================
+    #   内部函数
+    # ====================================================================
+    def _calculate_mean(self, series: pd.Series) -> float:
+        """
+        Calculate the mean of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Mean value of the series
+        """
+        return series.mean()
+
+    def _calculate_median(self, series: pd.Series) -> float:
+        """
+        Calculate the median of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Median value of the series
+        """
+        return series.median()
+
+    def _calculate_max(self, series: pd.Series) -> float:
+        """
+        Calculate the maximum value of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Maximum value of the series
+        """
+        return series.max()
+
+    def _calculate_min(self, series: pd.Series) -> float:
+        """
+        Calculate the minimum value of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Minimum value of the series
+        """
+        return series.min()
+
+    def _calculate_std(self, series: pd.Series) -> float:
+        """
+        Calculate the standard deviation of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Standard deviation of the series
+        """
+        return series.std()
+
+    def _calculate_q1(self, series: pd.Series) -> float:
+        """
+        Calculate the first quartile (Q1) of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            First quartile (Q1) value of the series
+        """
+        return series.quantile(0.25)
+
+    def _calculate_q3(self, series: pd.Series) -> float:
+        """
+        Calculate the third quartile (Q3) of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Third quartile (Q3) value of the series
+        """
+        return series.quantile(0.75)
+
+    def _calculate_p10(self, series: pd.Series) -> float:
+        """
+        Calculate the 10th percentile (P10) of a series.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            10th percentile (P10) value of the series
+        """
+        return series.quantile(0.10)
+
+    def _calculate_percent_above_q3(self, series: pd.Series) -> float:
+        """
+        Calculate the percentage of values above the third quartile (Q3).
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Percentage of values above Q3 (between 0.0 and 1.0)
+
+        Note:
+            Returns 0.0 if series has fewer than 4 points or if Q3 equals max.
+        """
+        if len(series) < 4:
+            return 0.0
+        q3 = series.quantile(0.75)
+        # Avoid case where Q3 equals max value (no values can be above Q3)
+        if q3 == series.max():
+            return 0.0
+        count_above_q3 = (series > q3).sum()
+        percent_above_q3 = count_above_q3 / len(series)
+        return percent_above_q3
+
+    def _mad_from_mean(self, series: pd.Series) -> float:
+        """
+        Calculate mean absolute deviation from mean.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Mean absolute deviation from the series mean
+        """
+        return (series - series.mean()).abs().mean()
+
+    def _mad_from_median(self, series: pd.Series) -> float:
+        """
+        Calculate mean absolute deviation from median.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Mean absolute deviation from the series median
+        """
+        return (series - series.median()).abs().mean()
+
+    def _autocorr_lag1(self, series: pd.Series) -> float | None:
+        """
+        Calculate first-order autocorrelation.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            First-order autocorrelation coefficient, or None if series
+            has fewer than 2 data points
+        """
+        if len(series) < 2:
+            return None
+        return series.autocorr(lag=1)
