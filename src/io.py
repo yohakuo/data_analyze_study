@@ -1,9 +1,6 @@
-"""
-与数据库连接、数据读写、预处理相关的核心函数。
-"""
-
 import csv
 import datetime
+import glob
 import os
 import re
 from zoneinfo import ZoneInfo
@@ -77,6 +74,36 @@ def read_excel_data(file_path: str, sheet_name=0, header_row=0, dtypes=None) -> 
     except Exception as e:
         print(f"错误: 读取 Excel 文件 {file_path} 失败: {e}")
     return pd.DataFrame()
+
+
+def load_heritage_data(data_dir="data"):
+    """
+    自动读取 data 目录下所有的 csv 文件并合并
+    """
+    all_files = glob.glob(os.path.join(data_dir, "*.csv"))
+
+    if not all_files:
+        return pd.DataFrame()
+
+    df_list = []
+    for filename in all_files:
+        try:
+            df = pd.read_csv(filename, encoding="gbk")
+            df_list.append(df)
+        except Exception as e:
+            print(f"Error loading {filename}: {e}")
+
+    if not df_list:
+        return pd.DataFrame()
+
+    full_df = pd.concat(df_list, ignore_index=True)
+
+    # 转换时间列
+    if "采集时间" in full_df.columns:
+        full_df["采集时间"] = pd.to_datetime(full_df["采集时间"])
+        full_df = full_df.set_index("采集时间").sort_index()
+
+    return full_df
 
 
 @timing_decorator

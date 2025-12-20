@@ -1,0 +1,29 @@
+metrics:
+  - id: "humidity_trend"
+    name: "湿度平均趋势"
+    description: "每小时湿度的均值变化"
+    data_field: "空气湿度（%）"
+    calculation_logic: ["均值"]
+    default_freq: "h"
+    viz_type: "line"
+  - id: "temperature_daily"
+    name: "每日温度统计"
+    description: "每日温度的均值、最大值、最小值"
+    data_field: "空气温度（℃）"
+    calculation_logic: ["均值", "最大值", "最小值"]
+    default_freq: "D"
+    viz_type: "line"
+  - id: "humidity_daily"
+    name: "每日湿度统计"
+    description: "每日湿度的均值、最大值、最小值"
+    data_field: "空气湿度（%）"
+    calculation_logic: ["均值", "最大值", "最小值"]
+    default_freq: "D"
+    viz_type: "line"
+  - id: "temperature_trend"
+    name: "温度平均趋势"
+    description: "每小时温度的均值变化"
+    data_field: "空气温度（℃）"
+    calculation_logic: ["均值"]
+    default_freq: "h"
+    viz_type: "line"
