@@ -15,7 +15,7 @@ TGT_TABLE = "sensor_feature_data"
 STATS_CYCLE = "hour"
 
 PIPELINE_CONFIG = {
-    "database": {"target": "shared"},
+    "database": {"target": "shared", "database": SRC_DB},
     "extract": {
         "database": SRC_DB,
         "table": SRC_TABLE,

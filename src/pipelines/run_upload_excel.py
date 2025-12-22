@@ -111,7 +111,7 @@ def process_task_2(client):
 def main():
     try:
         DB = config.CLICKHOUSE_SHARED_DB
-        client = get_clickhouse_client(DB)
+        client = get_clickhouse_client(database=DB)
         process_task_1(client)
         # process_task_2(client)
 

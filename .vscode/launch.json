@@ -1,0 +1,15 @@
+{
+    "version":"0.2.0",
+    "configurations": [
+    {
+            "type":"java",
+            "name":"Launch Java Program",
+            "projectName":"us-start",
+            "request":"launch",
+            "mainClass":"com.amap.us.start.Application",
+            //"preLaunchTask": "mvn clean install",            
+            "args":"--spring.profiles.active=testing,gray8",
+            "vmArgs":"-Xms516M -Xmx2048M -Djps.track.ap.dependencies=false -Dspring-boot.run.fork=false"
+    }
+  ]
+}

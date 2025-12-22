@@ -22,26 +22,32 @@ from src.utils import generate_create_table_sql, timing_decorator
 # ====================================================================
 
 
-def get_clickhouse_client(target: str = "shared") -> Client:
+# @timing_decorator
+def get_clickhouse_client(target: str = "shared", database: str = None) -> Client:
     """
-    根据目标名称 ('local' 或 'shared')，创建并返回一个 ClickHouse 客户端。
-    这个客户端【没有】连接到任何特定的数据库。
+    根据 ('local' 或 'shared')，创建并返回一个 ClickHouse 客户端。可指定连接到的数据库。
     """
     print(f"  ► 正在创建指向 '{target}' ClickHouse 服务器的连接...")
     try:
+        common_params = {}
+        if database:
+            common_params["database"] = database
+
         if target == "local":
             return Client(
-                host=config.CLICKHOUSE_HOST,
-                port=config.CLICKHOUSE_PORT,
                 user=config.CLICKHOUSE_USER,
                 password=config.CLICKHOUSE_PASSWORD,
+                host=config.CLICKHOUSE_HOST,
+                port=config.CLICKHOUSE_PORT,
+                **common_params,
             )
         elif target == "shared":
             return Client(
-                host=config.CLICKHOUSE_SHARED_HOST,
-                port=config.CLICKHOUSE_SHARED_PORT,
                 user=config.CLICKHOUSE_SHARED_USER,
                 password=config.CLICKHOUSE_SHARED_PASSWORD,
+                host=config.CLICKHOUSE_SHARED_HOST,
+                port=config.CLICKHOUSE_SHARED_PORT,
+                **common_params,
             )
         else:
             raise ValueError(f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。")
@@ -79,8 +85,7 @@ def read_excel_data(file_path: str, sheet_name=0, header_row=0, dtypes=None) -> 
     return pd.DataFrame()
 
 
-@timing_decorator
-def get_timeseries_data(
+def _get_ts_influxdb(
     measurement_name: str,
     field_name: str,
     start_time: datetime.datetime = None,
@@ -131,6 +136,63 @@ def get_timeseries_data(
         else:
             print(f"错误：返回的数据中缺少 '_time' 或 '{field_name}' 列。")
             return pd.DataFrame()
+
+
+def get_ts_clickhouse(
+    database_name: str,
+    table_name: str,
+    field_name: str,
+    device_id: str,
+    temple_id: str,
+    start_time: datetime = None,
+    stop_time: datetime = None,
+) -> pd.DataFrame:
+    """
+    从 ClickHouse 获取指定时间范围的时序数据，并返回以时间为索引的 DataFrame。
+    """
+    TIME_COL = "time"
+    client = get_clickhouse_client(target="shared", database="default")
+    query = f"""
+    SELECT 
+        temple_id,
+        device_id,
+        time,
+        {field_name}
+    FROM {database_name}.{table_name}
+    WHERE {TIME_COL} >= %(start)s 
+        AND {TIME_COL} < %(stop)s
+        AND device_id = %(device_id)s
+        AND temple_id = %(temple_id)s
+    ORDER BY {TIME_COL} ASC
+    """
+    # SQL 参数化查询 (防止注入，处理时间格式)
+    params = {
+        "start": start_time,
+        "stop": stop_time,
+        "device_id": device_id,
+        "temple_id": temple_id,
+        "field_name": field_name,
+    }
+
+    # 执行查询并转换为 DataFrame
+    try:
+        # 直接使用 query_dataframe (如用的是 clickhouse-connect 或 clickhouse-driver 的 pandas 扩展)
+        df = client.query_dataframe(query, params=params)
+    except AttributeError:
+        # 如 client 不支持直接导出 DF，使用通用方法手动转换
+        result, columns = client.execute(query, params=params, with_column_types=True)
+        col_names = [c[0] for c in columns]
+        df = pd.DataFrame(result, columns=col_names)
+
+    # 数据后处理：设置时间索引
+    if not df.empty:
+        # 确保时间列是 datetime 类型
+        df[TIME_COL] = pd.to_datetime(df[TIME_COL])
+        # 将时间列设为索引
+        df.set_index(TIME_COL, inplace=True)
+        # 变成了索引，原来的列就可以删掉?（通常 set_index 会自动移走）
+
+    return df
 
 
 def create_table_if_not_exists(

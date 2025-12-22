@@ -18,7 +18,7 @@ def main():
     print(f"任务开始时间: {formatted_time}")
     try:
         DB = config.CLICKHOUSE_SHARED_DB
-        client = get_clickhouse_client(DB)
+        client = get_clickhouse_client(database=DB)
     except Exception:
         print("无法连接到 ClickHouse，脚本终止。")
         return

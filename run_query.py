@@ -17,12 +17,12 @@ except AttributeError as e:
 
 try:
     try:
-        client = get_clickhouse_client(target="shared")
-        DB = "default"
+        client = get_clickhouse_client(target="shared", database="default")
+        DB = "default"  # 更新当前 DB 变量，用于显示提示符
     except Exception:
         try:
-            client = get_clickhouse_client(target="default")
-            DB = "default"  # 更新当前 DB 变量，用于显示提示符
+            client = get_clickhouse_client(target="local", database="default")
+            DB = "default"
         except Exception as default_e:
             print(f"❌ 连 'default' 数据库也连接失败: {default_e}")
             sys.exit(1)

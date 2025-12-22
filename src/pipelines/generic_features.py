@@ -29,7 +29,9 @@ def run_generic_feature_pipeline(config: dict, id_limit: int = None, specific_id
     client = None
     try:
         # 1. [E] 连接
-        client = get_clickhouse_client(target=db_config["target"])
+        client = get_clickhouse_client(
+            target=db_config.get("target", "shared"), database=db_config.get("database")
+        )
 
         # 2. [E] 获取所有唯一的 ID
         if specific_ids:

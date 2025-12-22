@@ -171,3 +171,23 @@ make lint
 # 自动修复和格式化代码
 make format
 ```
+
+**f. 运行测试**
+
+使用 `pytest` 运行项目中的自动化测试。
+
+要运行所有测试 (包括 `tests/` 目录下的测试文件):
+```bash
+python -m pytest
+```
+
+要运行指定文件中的所有测试 (例如 `test_feature_calculator.py`):
+```bash
+python -m pytest tests/test_feature_calculator.py
+```
+
+如果你正在使用 `uv` 并且没有激活虚拟环境，可以使用 `uv run`：
+```bash
+uv run pytest
+```
+

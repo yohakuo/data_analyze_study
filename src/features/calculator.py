@@ -57,6 +57,10 @@ class FeatureCalculator:
             "Q3": self._calculate_q3,
             "P10": self._calculate_p10,
             "超过Q3占时比": self._calculate_percent_above_q3,
+            "平均绝对偏差_均值": self._mad_from_mean,
+            "平均绝对偏差_中位数": self._mad_from_median,
+            "变异系数": self._calculate_coefficient_of_variation,
+            "一阶自相关": self._autocorr_lag1,
         }
 
     def calculate_statistical_features(
@@ -74,7 +78,8 @@ class FeatureCalculator:
             df: DataFrame with DatetimeIndex containing time series data
             field_name: Name of the column to calculate features for
             feature_list: List of feature names to calculate. Valid options:
-                         均值, 中位数, 最大值, 最小值, 标准差, Q1, Q3, P10, 超过Q3占时比
+                         均值, 中位数, 最大值, 最小值, 标准差, Q1, Q3, P10, 超过Q3占时比,
+                         平均绝对偏差_均值, 平均绝对偏差_中位数, 变异系数, 一阶自相关
             freq: Resampling frequency. Options:
                   'h' - hourly, 'D' - daily, 'W' - weekly, 'M' - monthly
 
@@ -147,11 +152,9 @@ class FeatureCalculator:
 
         # Calculate rate of change for range
         if "极差" in resampled_stats.columns:
-            resampled_stats["极差的时间变化率"] = resampled_stats["极差"].pct_change().fillna(0)
-
-        # Rename median column to include (Q2) notation
-        if "中位数" in resampled_stats.columns:
-            resampled_stats.rename(columns={"中位数": "中位数 (Q2)"}, inplace=True)
+            resampled_stats["极差的时间变化率"] = (
+                resampled_stats["极差"].pct_change(fill_method=None).fillna(0)
+            )
 
         return resampled_stats
 
@@ -424,7 +427,7 @@ class FeatureCalculator:
         return recalculated_features
 
     # ====================================================================
-    #   内部函数
+    #   内部函数-计算统计特征
     # ====================================================================
     def _calculate_mean(self, series: pd.Series) -> float:
         """
@@ -545,6 +548,10 @@ class FeatureCalculator:
         percent_above_q3 = count_above_q3 / len(series)
         return percent_above_q3
 
+    # ====================================================================
+    #   内部函数-计算波动性特征
+    # ====================================================================
+
     def _mad_from_mean(self, series: pd.Series) -> float:
         """
         Calculate mean absolute deviation from mean.
@@ -583,3 +590,87 @@ class FeatureCalculator:
         if len(series) < 2:
             return None
         return series.autocorr(lag=1)
+
+    def _calculate_coefficient_of_variation(self, series: pd.Series) -> float | None:
+        """
+        Calculate coefficient of variation (CV).
+
+        The coefficient of variation is the ratio of the standard deviation
+        to the mean, expressed as a percentage. It's a normalized measure
+        of dispersion.
+
+        Args:
+            series: Time series data
+
+        Returns:
+            Coefficient of variation (std/mean), or None if mean is zero
+            or series is empty
+
+        Note:
+            Returns None if the mean is zero to avoid division by zero.
+        """
+        if series.empty:
+            return None
+        mean = series.mean()
+        if mean == 0 or np.isnan(mean):
+            return None
+        std = series.std()
+        if np.isnan(std):
+            return None
+        return std / mean
+
+    def calculate_autocorrelation(
+        self, series: pd.Series, max_lag: int | None = None
+    ) -> pd.Series:
+        """
+        Calculate autocorrelation function for multiple lags.
+
+        This method computes the autocorrelation coefficients for lags
+        from 0 to max_lag (or up to len(series)-1 if max_lag is None).
+
+        Args:
+            series: Time series data
+            max_lag: Maximum lag to calculate. If None, calculates up to
+                    len(series) - 1. Default is None.
+
+        Returns:
+            Series with autocorrelation values indexed by lag.
+            Returns empty Series if input is invalid.
+
+        Example:
+            >>> calculator = FeatureCalculator()
+            >>> acf = calculator.calculate_autocorrelation(series, max_lag=10)
+            >>> print(acf[1])  # First-order autocorrelation
+        """
+        if series.empty or len(series) < 2:
+            logger.warning(
+                "Series too short for autocorrelation calculation",
+                extra={"series_length": len(series)},
+            )
+            return pd.Series(dtype=float)
+
+        if max_lag is None:
+            max_lag = len(series) - 1
+        else:
+            max_lag = min(max_lag, len(series) - 1)
+
+        autocorrs = []
+        lags = []
+
+        for lag in range(max_lag + 1):
+            if lag == 0:
+                # Lag 0 is always 1.0 (perfect correlation with itself)
+                autocorrs.append(1.0)
+            else:
+                autocorr = series.autocorr(lag=lag)
+                if autocorr is None or np.isnan(autocorr):
+                    break
+                autocorrs.append(autocorr)
+            lags.append(lag)
+
+        result = pd.Series(autocorrs, index=lags, name="自相关系数")
+        logger.debug(
+            f"Calculated autocorrelation for {len(result)} lags",
+            extra={"max_lag": max_lag, "valid_lags": len(result)},
+        )
+        return result
