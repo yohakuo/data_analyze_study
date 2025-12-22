@@ -715,6 +715,17 @@ def calculate_range(data_json: str, field_name: str, freq: str = "h") -> str:
 # ============================================================================
 # Batch Statistical Features Tool
 # ============================================================================
+# 模拟数据库读取
+def fetch_real_data(cave_id: str, start_date: str, end_date: str) -> pd.DataFrame:
+    # 在实际论文中，这里是 pd.read_sql(...)
+    # 这里我们生成假数据用于测试
+    dates = pd.date_range(start=start_date, end=end_date, freq="h")
+    data = {
+        "time": dates,
+        "temperature": np.random.normal(20, 5, len(dates)),
+        "humidity": np.random.normal(50, 10, len(dates)),
+    }
+    return pd.DataFrame(data).set_index("time")
 
 
 def _calculate_statistical_features_impl(
@@ -813,3 +824,41 @@ def calculate_statistical_features(
                                "最小值": 15.0, "极差": 10.0, "极差的时间变化率": 0.0}, ...]}
     """
     return _calculate_statistical_features_impl(data_json, field_name, feature_list, freq)
+
+
+# ============================================================================
+# Batch Statistical Features Tool
+# ============================================================================
+@mcp.tool()
+def execute_python_analysis(code_snippet: str, cave_id: str) -> str:
+    """
+    一个可以执行 Pandas 代码的工具。
+    df 变量已经预置好了，代表该洞窟的数据。
+
+    Args:
+        code_snippet: 只需要写计算逻辑，例如 "result = df['temperature'].mean()"
+        cave_id: 洞窟ID，用于后台加载数据
+    """
+    try:
+        # 1. 数据加载
+        # 假设 fetch_real_data 是你从csv或数据库读数据的函数
+        df = fetch_real_data(cave_id)
+
+        # 2. 准备执行环境 (Sandbox)
+        # 只允许模型访问 df 和 pandas，防止它干坏事（如删除文件）
+        local_scope = {"df": df, "pd": pd, "result": None}
+
+        # 3. 执行模型生成的代码
+        # 这是一个极简的解释器，论文里你可以叫它 "Dynamic Semantic Executor"
+        exec(code_snippet, {}, local_scope)
+
+        # 4. 获取结果
+        result = local_scope.get("result")
+        return str(result)
+
+    except Exception as e:
+        return f"代码执行错误: {str(e)}"
+
+
+if __name__ == "__main__":
+    mcp.run()
