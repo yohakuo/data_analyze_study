@@ -1,8 +1,8 @@
 import re  # 导入 re 模块，用于更灵活地解析
 import sys
 
-from clickhouse_driver import Client
 import pandas as pd
+from clickhouse_driver import Client
 
 from src import config
 from src.io import get_clickhouse_client
@@ -52,7 +52,9 @@ try:
         # ^\s*USE\s+     -> 以 'USE' 开头 (允许前后有空格)
         # ([a-zA-Z0-9_]+) -> 捕获数据库名称 (只允许标准字符)
         match = re.match(
-            r"^\s*USE\s+([a-zA-Z0-9_]+)\s*;?\s*$", query_stripped, re.IGNORECASE | re.DOTALL
+            r"^\s*USE\s+([a-zA-Z0-9_]+)\s*;?\s*$",
+            query_stripped,
+            re.IGNORECASE | re.DOTALL,
         )
 
         if match:

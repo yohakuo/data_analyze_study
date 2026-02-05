@@ -1,0 +1,116 @@
+# 风险特征计算配置文件
+# 使用方法: python run_risk_features.py --config config_risk.yaml
+
+# ====================================================================
+# 1. 水汽扩散方向
+# ====================================================================
+# 新逻辑（适配实际数据）:
+#   - 洞内数据: 需要 temperature 和 humidity，脚本会自动计算水汽压
+#   - 洞外数据: 直接使用 avg_vapor_pressure 字段
+vapor_pressure_gradient:
+  enabled: true                              # 是否启用此特征
+  cave_inside_file: "data/output/071_20220927_20241119.csv"   # 洞内数据文件路径
+  cave_outside_file: "data/output/071_20220927_20241119.csv" # 洞外数据文件路径
+  time_column: "time"                        # 时间列名
+  
+  # 洞内数据列（用于计算水汽压）
+  temp_col_in: "temperature"                 # 洞内温度列名
+  humidity_col_in: "humidity"                # 洞内湿度列名
+  
+  # 洞外数据列（直接使用水汽压）
+  vapor_pressure_col_out: "avg_vapor_pressure"  # 洞外水汽压列名
+  
+  encoding: "utf-8"                          # 文件编码 (utf-8 或 gbk)
+
+# ====================================================================
+# 2. 高湿暴露特征
+# ====================================================================
+high_humidity_exposure:
+  enabled: true                              # 是否启用此特征
+  data_file: "data/output/071_20220927_20241119.csv"          # 湿度数据文件路径
+  time_column: "time"                        # 时间列名
+  humidity_column: "humidity"                # 湿度列名
+  threshold: 50.0                            # 高湿阈值 (%)
+  freq: "D"                                  # 统计周期: 
+                                            #   'h' = 小时
+                                            #   'D' = 天
+                                            #   'W' = 周
+                                            #   'M' = 月
+  encoding: "utf-8"                          # 文件编码
+
+# ====================================================================
+# 3. 降雨强度特征
+# ====================================================================
+rainfall_intensity:
+  enabled: true                              # 是否启用此特征
+  data_file: "data/output/071_20220927_20241119.csv"             # 降雨数据文件路径
+  time_column: "time"                        # 时间列名
+  rainfall_column: "total_rainfall(10min)"                # 降雨量列名 (mm)
+  window: "1h"                            # 滑动窗口大小
+                                            #   例: "10min", "30min", "1H"
+  freq: "6h"                                  # 统计周期 (同上)
+  encoding: "utf-8"                          # 文件编码
+
+# ====================================================================
+# 4. 相关性分析（可选）
+# ====================================================================
+# 注意: 只有同时启用高湿暴露和降雨强度时才会执行相关性分析
+correlation_analysis:
+  enabled: true                              # 是否启用相关性分析
+  humidity_col: "total_exposure_hours"       # 高湿特征列名
+  rainfall_col: "rainfall_peak"              # 降雨特征列名
+
+# ====================================================================
+# CSV 文件格式要求
+# ====================================================================
+#
+# 所有CSV文件必须包含时间列，其他列根据功能需求包含相应数据
+#
+# 1. 洞内/洞外数据文件示例:
+#    time,temperature,humidity
+#    2024-01-01 00:00:00,15.5,60.2
+#    2024-01-01 01:00:00,15.3,61.5
+#    2024-01-01 02:00:00,15.1,62.8
+#    ...
+#
+# 2. 降雨数据文件示例:
+#    time,total_rainfall(10min)
+#    2024-01-01 00:00:00,0.0
+#    2024-01-01 00:10:00,1.2
+#    2024-01-01 00:20:00,2.5
+#    2024-01-01 00:30:00,0.8
+#    ...
+#
+# 时间格式支持:
+#   - "2024-01-01 00:00:00"
+#   - "2024-01-01"
+#   - "2024/01/01 00:00:00"
+#   - 等 pandas 支持的时间格式
+#
+# 编码格式:
+#   - utf-8: 推荐使用（跨平台兼容性好）
+#   - gbk: 如果是 Windows 中文环境下生成的 CSV
+#
+# ====================================================================
+# 输出说明
+# ====================================================================
+#
+# 脚本会在指定的输出目录（默认 output/）生成以下文件:
+#
+# 1. vapor_pressure_gradient.csv - 水汽扩散方向结果
+#    包含列: VP_in, VP_out, delta_VP, diffusion_direction
+#
+# 2. high_humidity_exposure.csv - 高湿暴露特征结果
+#    包含列: total_exposure_hours, max_continuous_hours, 
+#           exposure_episodes, exposure_ratio
+#
+# 3. rainfall_intensity.csv - 降雨强度特征结果
+#    包含列: rainfall_peak, rainfall_mean, rainfall_total, rainfall_hours
+#
+# 4. correlation_analysis.csv - 相关性分析结果（如果启用）
+#    包含列: correlation, p_value, slope, intercept, r_squared
+#
+# 5. summary_report.txt - 汇总报告
+#
+# 6. *.png - 可视化图表（如果未使用 --no-plot 选项）
+#

@@ -1,13 +1,11 @@
-from datetime import datetime
-from functools import wraps
 import random
 import re
 import time
+from datetime import datetime
+from functools import wraps
 
 import pandas as pd
 import pandas.api.types as ptypes
-
-from src import config  # 导入中央配置
 
 
 def timing_decorator(func):
@@ -66,7 +64,10 @@ def process_dataframe(df_raw, column_map):
 
 
 def generate_create_table_sql(
-    df: pd.DataFrame, full_table_path: str, engine: str = "MergeTree", order_by: str = None
+    df: pd.DataFrame,
+    full_table_path: str,
+    engine: str = "MergeTree",
+    order_by: str = None,
 ) -> str:
     """
     [“自动建表”工具]

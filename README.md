@@ -1,50 +1,13 @@
-## 核心功能
-
-- **数据提取**: 从 InfluxDB 中高效查询指定时间范围的时间序列数据。
-- **数据预处理**: 标准化的数据清洗流程，包括时区转换、重采样和缺失值填充。
-- **特征工程**: 提供多种特征计算方法（例如，统计特征、窗口特征等）。
-- **数据存储**: 将计算好的特征数据持久化存储到 ClickHouse 中，便于后续的分析和建模。
-- **交互式分析**: 集成 Jupyter Notebook/Lab，方便进行探索性数据分析（EDA）和算法验证。
-
-## 项目结构
-
-```
-ts_fe/
-│
-├── data/              # 存放原始、中间和处理后的数据
-├── docs/              # 项目文档
-├── models/            # 训练好的模型
-├── notebooks/         # 用于交互式分析的 Jupyter Notebooks
-├── reports/           # 生成的报告和图表
-├── scripts/           # 辅助和独立的脚本集合
-├── src/               # 项目核心源代码
-│   ├── __init__.py
-│   ├── config.py      # 核心配置文件，包含数据库连接、文件路径等
-│   ├── dataset.py     # 数据加载、预处理和存储模块
-│   ├── features.py    # 特征工程模块
-│   ├── plots.py       # 可视化函数
-│   └── ...
-├── tests/             # 自动化测试脚本
-│
-├── run_preprocessing.py # 运行数据预处理
-├── run_features_cal.py  # 运行特征计算
-├── run_query.py         # 交互式查询ClickHouse数据库
-│
-├── Makefile           # 自动化命令集合
-├── requirements.txt   # 项目依赖
-└── README.md          # 项目说明文档
-```
-
-dataset
-```
-  1. 数据库连接 (Database Clients)
-  2. 数据读写 (Data I/O)
-  3. 数据预处理 (Preprocessing)
-  4. 高级工作流 (High-Level Workflows)
-```
-
 
 ## 快速开始
+### 数据提取
+```
+# 基本用法
+python fetch_cave_data.py -t "108" -s "2024-01-01 00:00:00" -e "2024-01-02 00:00:00"
+
+# 指定输出格式为 Excel，并指定保存文件夹
+python run_fetch.py -t "108" -s "2024-01-01 00:00:00" -e "2024-01-02 00:00:00" --db "test_db" --table "processed_data"
+```
 
 ### 1. 环境准备
 - Python 3.12+

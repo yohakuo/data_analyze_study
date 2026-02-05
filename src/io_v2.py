@@ -1,0 +1,540 @@
+import csv
+import datetime
+import glob
+import os
+import re
+from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
+from clickhouse_driver import Client
+from influxdb_client.client.write_api import SYNCHRONOUS
+
+from src import config, table_definitions
+from src.utils import generate_create_table_sql, timing_decorator
+
+
+# ====================================================================
+#   数据库连接 (Database Clients)
+# ====================================================================
+# @timing_decorator
+def get_clickhouse_client(target: str = "shared", database: str = None) -> Client:
+    """
+    根据 ('local' 或 'shared')，创建并返回一个 ClickHouse 客户端。可指定连接到的数据库。
+    """
+    print(f"  ► 正在创建指向 '{target}' ClickHouse 服务器的连接...")
+    try:
+        common_params = {}
+        if database:
+            common_params["database"] = database
+
+        if target == "local":
+            return Client(
+                user=config.CLICKHOUSE_USER,
+                password=config.CLICKHOUSE_PASSWORD,
+                host=config.CLICKHOUSE_HOST,
+                port=config.CLICKHOUSE_PORT,
+                **common_params,
+            )
+        elif target == "shared":
+            return Client(
+                user=config.CLICKHOUSE_SHARED_USER,
+                password=config.CLICKHOUSE_SHARED_PASSWORD,
+                host=config.CLICKHOUSE_SHARED_HOST,
+                port=config.CLICKHOUSE_SHARED_PORT,
+                **common_params,
+            )
+        else:
+            raise ValueError(
+                f"未知的数据库目标: '{target}'。请选择 'local' 或 'shared'。"
+            )
+    except Exception as e:
+        print(f"❌ 连接到 '{target}' ClickHouse 时出错: {e}")
+        raise
+
+
+# ====================================================================
+#   读取数据
+# ====================================================================
+def _base_query_clickhouse(client: Client, query: str, params: dict) -> pd.DataFrame:
+    """
+    【核心底层】负责：执行SQL -> 转DF -> 统一时区。
+    """
+    try:
+        df = client.query_dataframe(query, params=params)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        # 统一处理时间列，只要列名叫 'time' 就转换
+        if "time" in df.columns:
+            df["time"] = pd.to_datetime(df["time"], utc=True)
+
+        return df
+    except Exception as e:
+        print(f"ClickHouse 查询底层出错: {e}")
+        return pd.DataFrame()
+
+
+def get_data_from_clickhouse(
+    client: Client,
+    database_name: str,
+    table_name: str,
+    temple_id: str,
+    start_time: datetime.datetime,
+    end_time: datetime.datetime,
+) -> pd.DataFrame:
+    """
+    重构后的版本：接口完全兼容旧脚本，内部逻辑已通用化。
+    """
+    full_table_path = f"`{database_name}`.`{table_name}`"
+
+    # 构造 SQL
+    query = f"""
+        SELECT * FROM {full_table_path} 
+        WHERE `time` >= %(start)s 
+          AND `time` < %(end)s 
+          AND `temple_id` = %(temple)s
+        ORDER BY `device_id`, `time`
+    """
+
+    params = {
+        "start": start_time.astimezone(datetime.timezone.utc),
+        "end": end_time.astimezone(datetime.timezone.utc),
+        "temple": temple_id,
+    }
+
+    # 调用核心函数
+    return _base_query_clickhouse(client, query, params)
+
+
+# ====================================================================
+#   写入数据
+# ====================================================================
+def create_table_if_not_exists(
+    client: Client, db_name: str, table_name: str, schema_template: str
+) -> bool:
+    """
+    根据提供的模板，创建数据库和表（如果不存在）。
+
+    Args:
+        client: ClickHouse 数据库连接。
+        db_name: 数据库名。
+        table_name: 要创建的表名。
+        schema_template: 包含 {db_name} 和 {table_name} 占位符的 SQL 字符串。
+
+    Returns:
+        bool: 成功返回 True，失败返回 False。
+    """
+    try:
+        client.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
+        create_table_query = schema_template.format(
+            db_name=db_name, table_name=table_name
+        )
+        client.execute(create_table_query)
+        # print(f"表 {db_name}.`{table_name}` 检查/创建 成功。")
+        return True
+    except Exception as e:
+        print(f"错误: 创建表 {db_name}.`{table_name}` 失败: {e}")
+        return False
+
+
+def _create_raw_tables_if_not_exists(client: Client):
+    """
+    使用 src.table_definitions 中的模板创建原始数据表（如果不存在）。
+    """
+    db_name = config.CLICKHOUSE_SHARED_DB
+
+    # 1. 从 config 获取表名，从 table_definitions 获取表结构
+    table_temp_name = config.RAW_SENSOR_MAPPING_CONFIG["无线温湿度传感器"][
+        "clickhouse_table"
+    ]
+    create_table_if_not_exists(
+        client, db_name, table_temp_name, table_definitions.RAW_TEMP_HUMIDITY_SCHEMA
+    )
+
+    # 2. 同上，处理 CO2 表
+    table_co2_name = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"][
+        "clickhouse_table"
+    ]
+    create_table_if_not_exists(
+        client, db_name, table_co2_name, table_definitions.RAW_CO2_SCHEMA
+    )
+
+
+def load_to_clickhouse(client: Client, df: pd.DataFrame, table_name: str) -> bool:
+    """
+    通用的 ClickHouse 数据加载函数，根据 DataFrame 的列名自动插入。
+    """
+    if df.empty:
+        print(f"数据为空，跳过插入表 '{table_name}'")
+        return False
+
+    try:
+        data_to_insert = df.to_dict("records")
+        # 构造插入语句，使用反引号 ` ` 保证字段名正确
+        column_names = ", ".join([f"`{col}`" for col in df.columns])
+        query = f"INSERT INTO {table_name} ({column_names}) VALUES"
+        client.execute(query, data_to_insert)
+        print(f"成功: {len(data_to_insert)} 条记录已插入到表 '{table_name}'")
+        return True
+    except Exception as e:
+        print(f"错误: 插入数据到 '{table_name}' 失败: {e}")
+        if data_to_insert:
+            print(f"失败数据示例 (第一行): {data_to_insert[0]}")
+        return False
+
+
+def store_dataframe_to_clickhouse(
+    df: pd.DataFrame,
+    client: Client,
+    database_name: str,
+    table_name: str,
+    chunk_size: int = 100000,
+):
+    """
+    将 Pandas DataFrame 【分块】写入【指定的数据库】和【指定的表】。
+    """
+    if df.empty:
+        print("\n  ► 数据为空，跳过写入 ClickHouse。")
+        return
+
+    full_table_path = f"`{database_name}`.`{table_name}`"
+
+    try:
+        df_to_insert = df.copy()
+        order_by_col_name = ""  # 需要变量来存储【清理后】的排序列名
+
+        if isinstance(df_to_insert.index, pd.DatetimeIndex):
+            index_name = (
+                df_to_insert.index.name if df_to_insert.index.name else "timestamp"
+            )
+            df_to_insert = df_to_insert.reset_index().rename(
+                columns={index_name: index_name}
+            )
+            order_by_col_name = index_name  # 原始排序列名 (例如 '_time')
+        else:
+            order_by_col_name = df_to_insert.columns[0]
+
+        #  ===== 先清理所有列名 =====
+        sanitized_columns = [
+            re.sub(r"\W+", "_", col).strip("_") for col in df_to_insert.columns
+        ]
+        df_to_insert.columns = sanitized_columns
+
+        # 我们也清理原始的排序列名，确保它和新列名能对上
+        sanitized_order_by_col = re.sub(r"\W+", "_", order_by_col_name).strip("_")
+        order_by_clause = f"(`{sanitized_order_by_col}`)"
+
+        # 自动生成建表 SQL 模板
+        # 此时 df_to_insert (列名已清理) 和 order_by_clause (也已清理)
+        # 传递给 generate_create_table_sql 时是完全匹配的
+        schema_template = generate_create_table_sql(
+            df_to_insert,
+            full_table_path,
+            engine="MergeTree",
+            order_by=order_by_clause,  # 传入清理后的 "(`time`)"
+        )
+
+        # 调用建表函数
+        if not create_table_if_not_exists(
+            client, database_name, table_name, schema_template
+        ):
+            raise Exception("建表失败，请检查错误信息。")
+
+        # 分块插入数据
+        column_names_str = ", ".join([f"`{col}`" for col in df_to_insert.columns])
+        query = f"INSERT INTO {full_table_path} ({column_names_str}) VALUES"
+
+        num_chunks = int(np.ceil(len(df_to_insert) / chunk_size))
+        for i, chunk_df in enumerate(np.array_split(df_to_insert, num_chunks)):
+            data_to_insert = chunk_df.values.tolist()
+            client.execute(query, data_to_insert)
+
+    except Exception as e:
+        print(f"❌  写入 ClickHouse 时发生错误: {e}")
+        raise
+
+
+# ====================================================================
+#   工作流
+# ====================================================================
+def process_excel_file(
+    file_path: str, client: Client, rules_config: dict, parse_config: dict
+):
+    """
+    处理单个传感器数据 Excel 文件：解析、转换并存入 ClickHouse。
+    这是一个高级工作流，组合了文件读取、数据转换和数据库写入。
+    """
+    filename = os.path.basename(file_path)
+    match = re.match(parse_config["filename_regex"], filename)
+    if not match:
+        print(f"  文件名 {filename} 不符合规则，跳过。")
+        return
+
+    # 从文件名提取元数据
+    device_id, temple_id, keyword = match.groups()
+
+    if keyword not in rules_config:
+        print(f"  未找到关键字 '{keyword}' 的映射规则，跳过。")
+        return
+
+    rules = rules_config[keyword]
+    target_table = rules["clickhouse_table"]
+    column_map = rules["column_mapping"]
+
+    print(
+        f"  解析成功: [Device: {device_id}, Temple: {temple_id}] -> 存入表: {target_table}"
+    )
+
+    # 读取 Excel (处理多年份 Sheet)
+    try:
+        xls = pd.ExcelFile(file_path)
+        header_row = parse_config["excel_reading"]["header_row"]
+        start_year, end_year = parse_config["excel_reading"]["sheet_year_range"]
+        valid_sheets = [
+            s
+            for s in xls.sheet_names
+            if s.isdigit() and start_year <= int(s) <= end_year
+        ]
+
+        if not valid_sheets:
+            print("  未找到任何有效的年份 Sheet，跳过。")
+            return
+
+        df_total = pd.concat(
+            [pd.read_excel(xls, sheet_name=s, header=header_row) for s in valid_sheets],
+            ignore_index=True,
+        )
+
+    except Exception as e:
+        print(f"  读取或合并 Excel 文件失败 (可能文件已打开或损坏): {e}")
+        return
+
+    # 数据清洗和转换
+    df_total.rename(columns=column_map, inplace=True)
+    final_db_columns = list(column_map.values())
+    df_to_insert = df_total[final_db_columns].copy()
+
+    df_to_insert["device_id"] = device_id
+    df_to_insert["temple_id"] = temple_id
+    df_to_insert["created_at"] = datetime.datetime.now()
+    df_to_insert["time"] = pd.to_datetime(df_to_insert["time"], errors="coerce")
+
+    for col in final_db_columns:
+        if col != "time":
+            df_to_insert[col] = pd.to_numeric(df_to_insert[col], errors="coerce")
+
+    df_to_insert.dropna(inplace=True)
+    if df_to_insert.empty:
+        print("  处理后数据为空 (可能所有行都有无效的时间或值)，跳过。")
+        return
+
+    # 准备数据以插入 ClickHouse
+    try:
+        full_table_name = f"{config.CLICKHOUSE_SHARED_DB}.{target_table}"
+        co2_table_name = config.RAW_SENSOR_MAPPING_CONFIG["无线二氧化碳传感器"][
+            "clickhouse_table"
+        ]
+
+        # 确保列顺序与数据库表一致
+        if target_table == co2_table_name:
+            final_columns_order = [
+                "temple_id",
+                "device_id",
+                "time",
+                "co2_collected",
+                "co2_corrected",
+                "created_at",
+            ]
+        else:
+            final_columns_order = [
+                "temple_id",
+                "device_id",
+                "time",
+                "humidity",
+                "temperature",
+                "created_at",
+            ]
+
+        df_to_insert = df_to_insert[final_columns_order]
+        data_to_insert = df_to_insert.values.tolist()
+
+        client.execute(f"INSERT INTO {full_table_name} VALUES", data_to_insert)
+        print(f"  成功! 插入 {len(data_to_insert)} 行数据到 {full_table_name}。")
+
+    except Exception as e:
+        print(f"  插入数据到 ClickHouse 失败: {e}")
+
+
+# --- [E] 提取模块 ---
+def get_distinct_ids(
+    client: Client, db: str, table: str, id_column: str = "device_id"
+) -> list:
+    """
+    [E] 从源表获取所有唯一的 ID 列表。
+    这是管线(Pipeline)的第一步。
+    """
+
+    query = f"SELECT DISTINCT `{id_column}` FROM `{db}`.`{table}`"
+    try:
+        result = client.execute(query)
+        id_list = [row[0] for row in result if row and row[0] is not None]
+        # print(f"   ► [E] 找到了 {len(id_list)} 个唯一的 ID。")
+        return id_list
+    except Exception as e:
+        print(f"❌ [E] 查询 distinct ID 失败: {e}")
+        return []
+
+
+def get_data_for_id(
+    client: Client,
+    db: str,
+    table: str,
+    device_id: str,
+    id_column: str = "device_id",
+    time_column: str = "time",
+) -> pd.DataFrame:
+    """
+    [E] 提取单个 ID 的【所有】历史数据。
+    这是管线(Pipeline)循环中的提取步骤。
+    """
+    # print(f"   ► [E] 正在提取 '{device_id}' 的所有数据...")
+    full_table_path = f"`{db}`.`{table}`"
+    params = {"id": device_id}
+
+    query = f"""
+        SELECT * FROM {full_table_path} 
+        WHERE `{id_column}` = %(id)s 
+        ORDER BY `{time_column}`
+    """
+    try:
+        df = client.query_dataframe(query, params=params)
+
+        # 你的 dataset.py 在提取后会转换时间
+        df[time_column] = pd.to_datetime(df[time_column], utc=True)
+
+        return df
+    except Exception as e:
+        print(f"❌ [E] 提取 ID '{device_id}' 数据失败: {e}")
+        return pd.DataFrame()
+
+
+# --- [L] 加载模块 ---
+def load_features_to_clickhouse(
+    features_df: pd.DataFrame,
+    client: Client,
+    db: str,
+    table: str,
+    stats_cycle: str = None,
+):
+    if features_df.empty:
+        print(" 特征数据为空。")
+        return
+
+    # 复制一份以避免 SettingWithCopyWarning
+    df_to_load = features_df.copy()
+
+    # 1. 添加元数据
+    if "stats_cycle" not in df_to_load.columns:
+        if stats_cycle:
+            df_to_load["stats_cycle"] = stats_cycle
+        else:
+            df_to_load["stats_cycle"] = "unknown"
+    df_to_load["created_at"] = datetime.datetime.now(datetime.timezone.utc)
+
+    # 2. 定义列名映射
+    COLUMN_MAP = {
+        "time": "stats_start_time",
+        "field_name": "monitored_variable",
+        "value": "feature_value",
+    }
+
+    df_to_load.rename(columns=COLUMN_MAP, inplace=True)
+
+    # 3. 确保数据类型匹配目标表
+    df_to_load["feature_value"] = df_to_load["feature_value"].astype(str)
+
+    # 4. (可选) 确保只包含目标表中的列
+    #    (注意: stat_id 和 standby_field01 应由数据库处理)
+    FINAL_COLUMNS = [
+        "temple_id",
+        "device_id",
+        "stats_start_time",
+        "monitored_variable",
+        "stats_cycle",
+        "feature_key",
+        "feature_value",
+        "created_at",
+    ]
+
+    # 筛选出最终的列
+    final_df = df_to_load[FINAL_COLUMNS]
+
+    try:
+        store_dataframe_to_clickhouse(
+            df=final_df,  # 传入重命名和清理后的 DataFrame
+            client=client,
+            database_name=db,
+            table_name=table,
+        )
+    except Exception as e:
+        print(f"❌ [L] 存储失败: {e}")
+
+
+def read_excel_data(
+    file_path: str, sheet_name=0, header_row=0, dtypes=None
+) -> pd.DataFrame:
+    """
+    通用 Excel 读取函数。
+
+    Args:
+        file_path (str): 文件路径。
+        sheet_name (int or str): 表单名 (默认为第一个)。
+        header_row (int): 标题行 (0 是第一行)。
+        dtypes (dict, optional): 指定列的数据类型。
+
+    Returns:
+        pd.DataFrame: 清理后的数据帧，如果失败则返回空的 DataFrame。
+    """
+    try:
+        df = pd.read_excel(
+            file_path, sheet_name=sheet_name, header=header_row, dtype=dtypes
+        )
+        df_cleaned = df.dropna(how="all")
+        return df_cleaned
+    except FileNotFoundError:
+        print(f"错误: 找不到文件 {file_path}")
+    except Exception as e:
+        print(f"错误: 读取 Excel 文件 {file_path} 失败: {e}")
+    return pd.DataFrame()
+
+
+def load_heritage_data(data_dir="data"):
+    """
+    自动读取 data 目录下所有的 csv 文件并合并
+    """
+    all_files = glob.glob(os.path.join(data_dir, "*.csv"))
+
+    if not all_files:
+        return pd.DataFrame()
+
+    df_list = []
+    for filename in all_files:
+        try:
+            df = pd.read_csv(filename, encoding="gbk")
+            df_list.append(df)
+        except Exception as e:
+            print(f"Error loading {filename}: {e}")
+
+    if not df_list:
+        return pd.DataFrame()
+
+    full_df = pd.concat(df_list, ignore_index=True)
+
+    # 转换时间列
+    if "采集时间" in full_df.columns:
+        full_df["采集时间"] = pd.to_datetime(full_df["采集时间"])
+        full_df = full_df.set_index("采集时间").sort_index()
+
+    return full_df

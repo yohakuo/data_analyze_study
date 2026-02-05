@@ -1,0 +1,44 @@
+# 简化版配置文件
+#
+# 只包含用户要求的两个数据源和字段:
+# 1. sensor_temp_humidity: temple_id, device_id, time, humidity, temperature
+# 2. cave_entrance: avg_vapor_pressure, total_rainfall(10min)
+#
+# 使用方法:
+#   python fetch_multi_table_data.py \
+#     --config data_config_simple.yaml \
+#     --temple 108 \
+#     --device 20A6 \
+#     --start "2024-01-01 00:00:00" \
+#     --end "2024-01-31 23:59:59"
+
+data_sources:
+  # 温湿度传感器数据
+  - database: original_data
+    table: sensor_temp_humidity
+    fields:
+      - temple_id
+      - device_id
+      - time
+      - humidity
+      - temperature
+    use_temple_id: true
+    use_device_id: true
+    agg_method:
+      temple_id: first
+      device_id: first
+      humidity: mean
+      temperature: mean
+
+  # 洞口气象数据
+  - database: original_data
+    table: cave_entrance
+    fields:
+      - time
+      - avg_vapor_pressure
+      - "`total_rainfall(10min)`"
+    use_temple_id: false
+    use_device_id: false
+    agg_method:
+      avg_vapor_pressure: mean
+      total_rainfall(10min): sum

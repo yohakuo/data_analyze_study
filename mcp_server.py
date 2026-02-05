@@ -9,11 +9,11 @@ calculated individually or in batch mode.
 import json
 import logging
 
-from fastmcp import FastMCP
 import numpy as np
 import pandas as pd
+from fastmcp import FastMCP
 
-from src.features.calculator import FeatureCalculator
+from src.calculator import FeatureCalculator
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -45,7 +45,11 @@ def create_error_response(error_type: str, message: str, details: dict = None) -
     """
     logger.error(
         f"MCP error: {error_type} - {message}",
-        extra={"error_type": error_type, "error_message": message, "error_details": details or {}},
+        extra={
+            "error_type": error_type,
+            "error_message": message,
+            "error_details": details or {},
+        },
     )
 
     error_response = {
@@ -114,7 +118,10 @@ def validate_frequency(freq: str) -> tuple[bool, str]:
     """
     valid_frequencies = ["h", "D", "W", "M", "ME", "MS"]
     if freq not in valid_frequencies:
-        return False, f"Invalid frequency '{freq}'. Valid frequencies: {valid_frequencies}"
+        return (
+            False,
+            f"Invalid frequency '{freq}'. Valid frequencies: {valid_frequencies}",
+        )
 
     return True, ""
 
@@ -149,7 +156,10 @@ def validate_feature_list(feature_list: list) -> tuple[bool, str]:
     invalid_features = [f for f in feature_list if f not in valid_features]
 
     if invalid_features:
-        return False, f"Invalid features: {invalid_features}. Valid features: {valid_features}"
+        return (
+            False,
+            f"Invalid features: {invalid_features}. Valid features: {valid_features}",
+        )
 
     return True, ""
 
@@ -241,7 +251,9 @@ def dataframe_to_json(df: pd.DataFrame) -> str:
     for col in df_copy.columns:
         if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
             # Convert to ISO format string with timezone
-            df_copy[col] = df_copy[col].apply(lambda x: x.isoformat() if pd.notna(x) else None)
+            df_copy[col] = df_copy[col].apply(
+                lambda x: x.isoformat() if pd.notna(x) else None
+            )
 
     # Handle NaN and infinity values in numeric columns before converting to dict
     for col in df_copy.columns:
@@ -286,7 +298,9 @@ def dataframe_to_json(df: pd.DataFrame) -> str:
 
 def _calculate_mean_impl(data_json: str, field_name: str, freq: str = "h") -> str:
     """Implementation of calculate_mean that can be tested directly."""
-    logger.info("MCP request: calculate_mean", extra={"field_name": field_name, "freq": freq})
+    logger.info(
+        "MCP request: calculate_mean", extra={"field_name": field_name, "freq": freq}
+    )
 
     try:
         # Validate JSON format
@@ -305,10 +319,14 @@ def _calculate_mean_impl(data_json: str, field_name: str, freq: str = "h") -> st
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["均值"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["均值"], freq
+        )
 
         logger.info(
             "MCP response: calculate_mean completed successfully",
@@ -319,7 +337,8 @@ def _calculate_mean_impl(data_json: str, field_name: str, freq: str = "h") -> st
 
     except Exception as e:
         logger.exception(
-            "Unexpected error in calculate_mean", extra={"field_name": field_name, "freq": freq}
+            "Unexpected error in calculate_mean",
+            extra={"field_name": field_name, "freq": freq},
         )
         return create_error_response("InternalError", f"An error occurred: {str(e)}")
 
@@ -370,10 +389,14 @@ def calculate_median(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["中位数"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["中位数"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -410,10 +433,14 @@ def calculate_max(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["最大值"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["最大值"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -450,10 +477,14 @@ def calculate_min(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["最小值"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["最小值"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -490,10 +521,14 @@ def calculate_std(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["标准差"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["标准差"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -530,7 +565,9 @@ def calculate_q1(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
         result = calculator.calculate_statistical_features(df, field_name, ["Q1"], freq)
@@ -570,7 +607,9 @@ def calculate_q3(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
         result = calculator.calculate_statistical_features(df, field_name, ["Q3"], freq)
@@ -610,10 +649,14 @@ def calculate_p10(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["P10"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["P10"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -650,10 +693,14 @@ def calculate_percent_above_q3(data_json: str, field_name: str, freq: str = "h")
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, ["超过Q3占时比"], freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, ["超过Q3占时比"], freq
+        )
         return dataframe_to_json(result)
 
     except Exception as e:
@@ -692,7 +739,9 @@ def calculate_range(data_json: str, field_name: str, freq: str = "h") -> str:
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Request both max and min to trigger automatic range calculation
         result = calculator.calculate_statistical_features(
@@ -761,14 +810,22 @@ def _calculate_statistical_features_impl(
         # Validate field exists
         is_valid, error_msg = validate_dataframe_field(df, field_name)
         if not is_valid:
-            return create_error_response("ValidationError", error_msg, {"field_name": field_name})
+            return create_error_response(
+                "ValidationError", error_msg, {"field_name": field_name}
+            )
 
         # Calculate features
-        result = calculator.calculate_statistical_features(df, field_name, feature_list, freq)
+        result = calculator.calculate_statistical_features(
+            df, field_name, feature_list, freq
+        )
 
         logger.info(
             "MCP response: calculate_statistical_features completed successfully",
-            extra={"field_name": field_name, "features": feature_list, "result_rows": len(result)},
+            extra={
+                "field_name": field_name,
+                "features": feature_list,
+                "result_rows": len(result),
+            },
         )
 
         return dataframe_to_json(result)
@@ -823,7 +880,9 @@ def calculate_statistical_features(
         Output: {"features": [{"time": "2024-01-01T00:00:00", "均值": 20.3, "最大值": 25.0,
                                "最小值": 15.0, "极差": 10.0, "极差的时间变化率": 0.0}, ...]}
     """
-    return _calculate_statistical_features_impl(data_json, field_name, feature_list, freq)
+    return _calculate_statistical_features_impl(
+        data_json, field_name, feature_list, freq
+    )
 
 
 # ============================================================================

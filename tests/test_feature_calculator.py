@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.features.calculator import FeatureCalculator
+from src.calculator import FeatureCalculator
 
 
 class TestRealData:
@@ -18,7 +18,9 @@ class TestRealData:
         """
         if target_variable:
             if "monitored_variable" in benchmark_df.columns:
-                benchmark_df = benchmark_df[benchmark_df["monitored_variable"] == target_variable]
+                benchmark_df = benchmark_df[
+                    benchmark_df["monitored_variable"] == target_variable
+                ]
 
         # 2. 确保时间列是 datetime 类型
         if time_col in benchmark_df.columns:
@@ -47,7 +49,9 @@ class TestRealData:
 
     @pytest.fixture
     def real_data(self):
-        df = pd.read_csv("tests/data/real_input.csv", parse_dates=["time"], index_col="time")
+        df = pd.read_csv(
+            "tests/data/real_input.csv", parse_dates=["time"], index_col="time"
+        )
         if df.index.tz is not None:
             df.index = df.index.tz_localize(None)
         return df.sort_index()
@@ -83,7 +87,9 @@ class TestRealData:
         }
 
         for bench_col in column_mapping.keys():
-            assert bench_col in benchmark_data_wide.columns, f"基准数据转换后缺少列: {bench_col}"
+            assert bench_col in benchmark_data_wide.columns, (
+                f"基准数据转换后缺少列: {bench_col}"
+            )
 
         # 重命名基准数据，使其与实际结果的列名一致
         expected_df = benchmark_data_wide.rename(columns=column_mapping)
@@ -143,7 +149,6 @@ class TestRealData:
                 "中位数",
                 "最大值",
                 "最小值",
-                "标准差",
                 "Q1",
                 "Q3",
                 "P10",

@@ -1,146 +1,195 @@
-import datetime
-
 import pandas as pd
 
-from src import config
-from src.features.statistica import FEATURE_CALCULATORS
-from src.features.statistica import calculate_features as _calculate_single_field_features
+from src.calculator import FeatureCalculator
+
+calc = FeatureCalculator()
 
 
-def preprocess_timeseries_data(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-) -> pd.DataFrame:
+def _standardize_output(wide_df: pd.DataFrame, cycle_label: str = None) -> pd.DataFrame:
     """
-    对原始时间序列数据进行标准化预处理：重采样、插值、时区转换。
+    标准化输出：转长表 + 注入 stats_cycle
     """
-    if df.empty:
-        return df
-
-    # 1. 统一时区为 UTC 进行处理
-    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
-
-    # 2. 创建完整时间轴并重采样
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq)
-    reindexed_df = df.reindex(full_range)
-
-    # 3. 插值填充：先线性插值，再用前后值填充边缘
-    filled_df = reindexed_df.interpolate(method="linear").ffill().bfill()
-
-    # 4. 转换回本地时区
-    final_df = filled_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 预处理完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
-
-
-def preprocess_limited_interpolation(
-    df: pd.DataFrame,
-    resample_freq: str,
-    start_time: datetime.datetime,
-    end_time: datetime.datetime,
-    gap_threshold_hours: float = 2.0,
-) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    df = df.tz_localize("UTC") if df.index.tz is None else df.tz_convert("UTC")
-
-    start_utc = start_time.astimezone(datetime.timezone.utc)
-    # end_time 应该是 "下一个月的第一分钟" 之前，
-    # 否则 date_range(..., end=...) 会漏掉 23:59:00
-    end_utc = end_time.astimezone(datetime.timezone.utc)
-    # 创建一个完整的、从月初到月末的 1 分钟索引
-    full_range = pd.date_range(start=start_utc, end=end_utc, freq=resample_freq, inclusive="left")
-    reindexed_df = df.reindex(full_range)
-
-    try:
-        threshold_duration = pd.Timedelta(hours=gap_threshold_hours)
-        resample_duration = pd.Timedelta(resample_freq)
-    except ValueError:
-        raise ValueError(
-            f"无效的 resample_freq: '{resample_freq}'。请使用 'T', 'min', 'H' 等 pandas 频率字符串。"
-        )
-
-    if resample_duration.total_seconds() <= 0:
-        raise ValueError(f"resample_freq '{resample_freq}' 必须是正的时间间隔。")
-
-    # 计算插值的最大连续点数
-    limit_count = int(threshold_duration / resample_duration) - 1
-    if limit_count < 1:
-        print(
-            f"警告: resample_freq ({resample_freq}) 大于或等于门限 ({gap_threshold_hours}h)。将不进行插值。"
-        )
-        limit_count = 0
-
-    interpolated_df = reindexed_df.interpolate(method="linear", limit=limit_count)
-
-    final_df = interpolated_df.dropna()
-    final_df = final_df.tz_convert(config.LOCAL_TIMEZONE)
-    final_df.index.name = "_time"
-
-    print(f"  ► 预处理(有限插值)完成。处理后的数据共有 {len(final_df)} 条记录。")
-    return final_df
-
-
-def transform_device_data(
-    device_df: pd.DataFrame, fields_to_process: list, features_to_calc: list, freq: str
-) -> pd.DataFrame:
-    """
-    [T] 转换包装器：
-    接收【单个设备】的数据，为【多个字段】计算【多个特征】。
-    """
-    if device_df.empty:
+    if wide_df.empty:
         return pd.DataFrame()
 
-    all_features_list = []
+    # 基础转换 (Reset Index & Melt)
+    df = wide_df.reset_index()
+    time_col = df.columns[0]
+    melted = df.melt(id_vars=[time_col], var_name="feature_key", value_name="value")
+    melted.rename(columns={time_col: "time"}, inplace=True)
 
-    try:
-        device_df_indexed = device_df.set_index("time")
+    # 注入周期标签
+    # 如果没传 label，就默认填个 'unknown' 防止空值报错
+    melted["stats_cycle"] = cycle_label if cycle_label else "unknown"
 
-        # 同时提取 device_id 和 temple_id
-        device_id = device_df["device_id"].iloc[0]
-        if "temple_id" not in device_df.columns:
-            print("❌ [T] 转换失败：数据中缺少 'temple_id' 列。")
-            return pd.DataFrame()
-        temple_id = device_df["temple_id"].iloc[0]
-    except KeyError as e:
-        print(f"❌ [T] 转换失败：数据中缺少 'time' 或 'device_id' 列。{e}")
+    return melted
+
+
+def process_statistical(df: pd.DataFrame, field: str, params: dict) -> pd.DataFrame:
+    """
+    处理器：统计特征
+    特点：依赖 freq (resample)，输出连续时间序列
+    """
+    freq = params.get("freq", "h")
+    cycle = params.get("cycle_label", freq)
+    res = calc.calculate_statistical_features(
+        df, field, params.get("metrics", []), freq
+    )
+    return _standardize_output(res, cycle_label=cycle)
+
+
+def process_volatility(df: pd.DataFrame, field: str, params: dict) -> pd.DataFrame:
+    # 如果配置里没写 freq，默认就按 'D' (天) 算
+    freq = params.get("freq", "D")
+    metrics = params.get("metrics", None)
+    cycle = params.get("cycle_label", "1d")
+    # 把配置里的参数透传进去
+    res = calc.calculate_volatility_features(
+        df,
+        field_name=field,
+        feature_list=metrics,
+        freq=freq,
+    )
+    return _standardize_output(res, cycle_label=cycle)
+
+
+def process_spectral(df: pd.DataFrame, field: str, params: dict) -> pd.DataFrame:
+    """
+    处理器：频谱/周期特征 (对应你特征表的第3类)
+    特点：不依赖 freq 重采样，而是对整个输入窗口做 FFT
+    """
+    cycle = params.get("cycle_label", "batch")
+    # 假设输入的是过去30天的数据
+    spectrum_df = calc.analyze_spectral(df, field)
+
+    if spectrum_df is None or spectrum_df.empty:
         return pd.DataFrame()
-    # 循环处理每个【字段】(e.g., 'humidity', 'temperature')
-    for field_name in fields_to_process:
-        # -----------------------------------------------------------------
-        # 2. 调用 (Call)
-        # -----------------------------------------------------------------
-        # ‼️ 在这里，【调用】了从 statistica.py 导入的函数
-        # -----------------------------------------------------------------
-        wide_df = _calculate_single_field_features(
-            device_df_indexed, field_name=field_name, feature_list=features_to_calc, freq=freq
-        )
 
-        if wide_df.empty:
-            continue
+    # 频谱返回的是 [周期, 强度]，我们需要把它变成特征行
+    # 策略：取强度最大的 Top N 周期作为特征
+    top_n = params.get("top_n", 1)
+    top_periods = spectrum_df.nlargest(top_n, "强度(幅度)")
 
-        # ... (后续的 Melt 和元数据添加) ...
-        long_df = wide_df.reset_index().melt(
-            id_vars=["time"], var_name="feature_key", value_name="value"
-        )
-        long_df["device_id"] = device_id
-        long_df["field_name"] = field_name
-        long_df["temple_id"] = temple_id
-        all_features_list.append(long_df)
+    features = {}
+    for i, (_, row) in enumerate(top_periods.iterrows()):
+        p_val = row["周期(小时)"]
+        s_val = row["强度(幅度)"]
+        # 命名特征：周期_1, 强度_1, 周期_2...
+        features[f"main_period_{i + 1}_hours"] = p_val
+        features[f"main_period_{i + 1}_strength"] = s_val
 
-    if not all_features_list:
+    # 频谱特征的时间点通常标记为这段数据的“结束时间”或“开始时间”
+    # 这里我们取数据的最后时间点作为特征的时间戳
+    timestamp = df.index.max()
+
+    # 构造单行 DataFrame
+    df = pd.DataFrame([features], index=[timestamp])
+    return _standardize_output(df, cycle_label=cycle)
+
+
+def process_vapor_pressure_gradient(
+    df_in: pd.DataFrame, df_out: pd.DataFrame, params: dict
+) -> pd.DataFrame:
+    """
+    处理器：水汽扩散方向
+    Args:
+        df_in: 洞内数据 DataFrame
+        df_out: 洞外数据 DataFrame
+        params: 参数字典，可包含：
+            - temp_col_in: 洞内温度列名 (默认 "temperature")
+            - humidity_col_in: 洞内湿度列名 (默认 "humidity")
+            - temp_col_out: 洞外温度列名 (默认 "temperature")
+            - humidity_col_out: 洞外湿度列名 (默认 "humidity")
+            - cycle_label: 周期标签 (默认 "raw")
+    Returns:
+        标准化的长表格式 DataFrame
+    """
+    temp_col_in = params.get("temp_col_in", "temperature")
+    humidity_col_in = params.get("humidity_col_in", "humidity")
+    temp_col_out = params.get("temp_col_out", "temperature")
+    humidity_col_out = params.get("humidity_col_out", "humidity")
+    cycle = params.get("cycle_label", "raw")
+
+    # 计算水汽压梯度
+    result_df = calc.calculate_vapor_pressure_gradient(
+        df_in=df_in,
+        df_out=df_out,
+        temp_col_in=temp_col_in,
+        humidity_col_in=humidity_col_in,
+        temp_col_out=temp_col_out,
+        humidity_col_out=humidity_col_out,
+    )
+
+    if result_df.empty:
         return pd.DataFrame()
 
-    final_df = pd.concat(all_features_list)
-    # 解决入库后时间后移8小时的问题
-    final_df = final_df.reset_index()
-    final_df["time"] = final_df["time"].dt.tz_localize(None)
+    # 标准化输出
+    return _standardize_output(result_df, cycle_label=cycle)
 
-    return final_df.dropna(subset=["value"])
+
+def process_high_humidity_exposure(
+    df: pd.DataFrame, field: str, params: dict
+) -> pd.DataFrame:
+    """
+    处理器：高湿暴露特征
+    Args:
+        df: 包含湿度数据的 DataFrame
+        field: 湿度字段名 (通常是 "humidity")
+        params: 参数字典，可包含：
+            - threshold: 高湿阈值 (默认 62.0%)
+            - freq: 统计周期 (默认 "D")
+            - cycle_label: 周期标签
+    Returns:
+        标准化的长表格式 DataFrame
+    """
+    threshold = params.get("threshold", 62.0)
+    freq = params.get("freq", "D")
+    cycle = params.get("cycle_label", freq)
+
+    # 计算高湿暴露
+    result_df = calc.calculate_high_humidity_exposure(
+        df=df,
+        humidity_col=field,
+        threshold=threshold,
+        freq=freq,
+    )
+
+    if result_df.empty:
+        return pd.DataFrame()
+
+    # 标准化输出
+    return _standardize_output(result_df, cycle_label=cycle)
+
+
+def process_rainfall_intensity(
+    df: pd.DataFrame, field: str, params: dict
+) -> pd.DataFrame:
+    """
+    处理器：降雨强度特征
+    Args:
+        df: 包含降雨数据的 DataFrame
+        field: 降雨量字段名 (如 "rainfall")
+        params: 参数字典，可包含：
+            - window: 滑动窗口大小 (默认 "10min")
+            - freq: 统计周期 (默认 "D")
+            - cycle_label: 周期标签
+    Returns:
+        标准化的长表格式 DataFrame
+    """
+    window = params.get("window", "10min")
+    freq = params.get("freq", "D")
+    cycle = params.get("cycle_label", freq)
+
+    # 计算降雨强度
+    result_df = calc.calculate_rainfall_intensity(
+        df=df,
+        rainfall_col=field,
+        window=window,
+        freq=freq,
+    )
+
+    if result_df.empty:
+        return pd.DataFrame()
+
+    # 标准化输出
+    return _standardize_output(result_df, cycle_label=cycle)

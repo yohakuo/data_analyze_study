@@ -1,0 +1,161 @@
+# 多表数据获取配置文件
+#
+# 用于定义需要查询的数据源、字段和聚合方法
+#
+# 使用方法:
+#   python fetch_multi_table_data.py --config data_config.yaml -s "..." -e "..."
+
+# ====================================================================
+# 数据源配置
+# ====================================================================
+data_sources:
+  # ========== 数据源 1: 温湿度传感器数据 ==========
+  - database: original_data
+    table: sensor_temp_humidity
+    
+    # 需要查询的字段
+    fields:
+      - temple_id
+      - device_id
+      - time
+      - humidity
+      - temperature
+    
+    # 是否使用 temple_id 过滤（当命令行提供 --temple 参数时）
+    use_temple_id: true
+    
+    # 是否使用 device_id 过滤（当命令行提供 --device 参数时）
+    use_device_id: true
+    
+    # 重采样时的聚合方法
+    # 支持的方法: mean, sum, max, min, first, last, median, std
+    agg_method:
+      temple_id: first      # ID 类字段用 first（取第一个值）
+      device_id: first
+      humidity: mean        
+      temperature: mean     
+    
+    # 是否添加数据源标识列（可选）
+    add_source_label: false
+
+  # ========== 数据源 2: 洞口气象数据 ==========
+  - database: original_data
+    table: cave_entrance
+    
+    fields:
+      - time
+      - avg_vapor_pressure              # 平均水汽压
+      - "`total_rainfall(10min)`"           # 10分钟降雨量
+      - relative_humidity               # 相对湿度
+      - air_temperature                 # 气温
+    
+    # 洞口气象数据没有 temple_id 和 device_id
+    use_temple_id: false
+    use_device_id: false
+    
+    agg_method:
+      avg_vapor_pressure: mean          # 水汽压用平均值
+      total_rainfall(10min): sum        # 降雨量用总和
+      relative_humidity: mean           # 相对湿度用平均值
+      air_temperature: mean             # 气温用平均值
+    
+    add_source_label: false
+
+  # ========== 数据源 3: CO2 数据（可选）==========
+  # 如果不需要，可以注释掉或删除
+  # - database: original_data
+  #   table: sensor_co2
+  #   
+  #   fields:
+  #     - temple_id
+  #     - device_id
+  #     - time
+  #     - co2_collected
+  #     - co2_corrected
+  #   
+  #   use_temple_id: true
+  #   use_device_id: true
+  #   
+  #   agg_method:
+  #     temple_id: first
+  #     device_id: first
+  #     co2_collected: mean
+  #     co2_corrected: mean
+
+# ====================================================================
+# 全局配置（可选）
+# ====================================================================
+
+# 默认重采样频率（可以被命令行参数 --resample 覆盖）
+default_resample: "10min"
+
+# 合并方式
+# - outer: 保留所有时间点（推荐）
+# - inner: 只保留所有数据源都有数据的时间点
+# - left: 以第一个数据源为准
+merge_how: "outer"
+
+# ====================================================================
+# 配置说明
+# ====================================================================
+#
+# 1. 字段名必须与数据库表中的实际字段名完全一致
+#    可以使用 clickhouse_schema.md 查看表结构
+#
+# 2. 聚合方法 (agg_method):
+#    - mean: 平均值（用于温度、湿度、压力等连续变量）
+#    - sum: 总和（用于降雨量、辐射量等累积变量）
+#    - max: 最大值
+#    - min: 最小值
+#    - first: 第一个值（用于 ID 类字段）
+#    - last: 最后一个值
+#    - median: 中位数
+#    - std: 标准差
+#
+# 3. 重采样频率支持的格式:
+#    - "10min" - 10分钟
+#    - "30min" - 30分钟
+#    - "1H" - 1小时
+#    - "1D" - 1天
+#    - "1W" - 1周
+#
+# 4. 如果某个表没有 temple_id 或 device_id 字段，
+#    请设置 use_temple_id: false 或 use_device_id: false
+#
+# 5. 数据源的顺序会影响合并结果，建议将主要数据源放在最前面
+#
+# ====================================================================
+# 使用示例
+# ====================================================================
+#
+# 1. 查询 108 窟的温湿度和洞口气象数据:
+#    python fetch_multi_table_data.py \
+#      --config data_config.yaml \
+#      --temple 108 \
+#      --start "2024-01-01 00:00:00" \
+#      --end "2024-01-31 23:59:59"
+#
+# 2. 查询特定设备的数据:
+#    python fetch_multi_table_data.py \
+#      --config data_config.yaml \
+#      --temple 108 \
+#      --device 20A6 \
+#      --start "2024-01-01 00:00:00" \
+#      --end "2024-01-31 23:59:59"
+#
+# 3. 自定义重采样频率为 30 分钟:
+#    python fetch_multi_table_data.py \
+#      --config data_config.yaml \
+#      --temple 108 \
+#      --start "2024-01-01 00:00:00" \
+#      --end "2024-01-31 23:59:59" \
+#      --resample 30min
+#
+# 4. 不进行重采样，保留原始时间粒度:
+#    python fetch_multi_table_data.py \
+#      --config data_config.yaml \
+#      --temple 108 \
+#      --start "2024-01-01 00:00:00" \
+#      --end "2024-01-31 23:59:59" \
+#      --no-resample
+#

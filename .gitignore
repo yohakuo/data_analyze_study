@@ -193,5 +193,5 @@ cython_debug/
 
 .claude
 .kiro
-
+.vscode/
 *.cursorrules

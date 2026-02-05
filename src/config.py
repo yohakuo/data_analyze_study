@@ -8,7 +8,6 @@ CLICKHOUSE_SHARED_PORT = "5050"
 CLICKHOUSE_SHARED_USER = "root"
 CLICKHOUSE_SHARED_PASSWORD = "123456"
 CLICKHOUSE_SHARED_DB = "original_data"  # original_data_processed
-CLICKHOUSE_MEASUREMENT_NAME = "sensor_temp_humidity"  # sensor_co2
 
 # ====================================================================
 # --- 原始数据批量导入配置  ---
@@ -45,57 +44,13 @@ RAW_SENSOR_MAPPING_CONFIG = {
     },
 }
 
-# ====================================================================
-# --- 线性插值配置  ---
-# ====================================================================
-INTERPOLATED_DB_NAME = "feature_db_interpolated"
-INTERPOLATED_TABLE_NAME = "humidity_hourly_interpolated"
-
 
 # ================================================================
 # ===== 本地配置 =====
 # ================================================================
-# InfluxDB 连接配置
-INFLUXDB_URL = "http://localhost:8086"
-INFLUXDB_TOKEN = "study2025"
-INFLUXDB_ORG = "task3"
-INFLUXDB_BUCKET = "cave45"
-
-# 导入CSV文件配置
-INFLUX_MEASUREMENT_NAME = "DongNan"  # DongNan、XiBei
-LOCAL_TIMEZONE = "Asia/Shanghai"
-
-# CSV文件的结构定义
-TIMESTAMP_COLUMN = "采集时间"
-TIMESTAMP_FORMAT = "%Y/%m/%d %H:%M:%S"
-FIELD_COLUMNS = ["空气温度（℃）", "空气湿度（%）"]
-TAG_COLUMNS = []
-
 
 # ClickHouse 连接配置
 CLICKHOUSE_HOST = "localhost"
 CLICKHOUSE_PORT = 8123
 CLICKHOUSE_USER = "default"
 CLICKHOUSE_PASSWORD = "study2025"
-DATABASE_NAME = "feature_db"
-HOURLY_FEATURES_TABLE = "humidity_hourly_features_DongNan"  # "humidity_hourly_features_XiBei"
-
-# 输出相关设置
-PROCESSED_DATA_PATH = "data/processed/"
-FIGURES_PATH = "figures/"
-
-# 查询设置
-MEASUREMENT_NAME = "DongNan"  # XiBei、DongNan
-FIELD_NAME = "空气湿度（%）"  # 空气湿度（%）、空气温度（℃）、CO₂-校正值（ppm）、CO₂-采集值（ppm）
-
-
-# ================================================================
-# ===== 字段别名/同义词映射表 =====
-# ================================================================
-# 字典的 key 是数据库中“规范”的、唯一的字段名
-# 字典的 value 是一个列表，包含了用户可能使用的所有别名
-FIELD_ALIAS_MAP = {
-    "空气湿度（%）": ["湿度", "相对湿度", "潮湿程度", "空气湿度"],
-    "空气温度": ["温度", "气温", "室温"],
-    # 未来可以继续添加其他字段，比如 "二氧化碳浓度": ["二氧化碳", "CO2"]
-}
